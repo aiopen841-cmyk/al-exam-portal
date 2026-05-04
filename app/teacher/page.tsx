@@ -132,9 +132,10 @@ export default function TeacherMarkingPage() {
   };
 
   const removePin = (id: string) => {
-    if (recordingPinId === id && mediaRecorderRef.current?.state !== "inactive") {
+    const mr = mediaRecorderRef.current;
+    if (recordingPinId === id && mr != null && mr.state !== "inactive") {
       skipUploadRef.current = true;
-      mediaRecorderRef.current?.stop();
+      mr.stop();
     }
     setPins((prev) => prev.filter((p) => p.id !== id));
     setUploadByPinId((prev) => {
