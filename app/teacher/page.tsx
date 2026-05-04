@@ -17,7 +17,6 @@ import { supabase } from "@/lib/supabaseClient";
 
 const TEACHER_AUDIO_BUCKET = "teacher-audio";
 
-/** Sample exam-style placeholder (responsive via CSS width). */
 const PLACEHOLDER_IMAGE_URL =
   "https://images.unsplash.com/photo-1434030216411-0b793f4b4173?auto=format&fit=crop&w=1600&q=80";
 
@@ -132,10 +131,9 @@ export default function TeacherMarkingPage() {
   };
 
   const removePin = (id: string) => {
-    const mr = mediaRecorderRef.current;
-    if (recordingPinId === id && mr != null && mr.state !== "inactive") {
+    if (recordingPinId === id && mediaRecorderRef.current?.state !== "inactive") {
       skipUploadRef.current = true;
-      mr.stop();
+      mediaRecorderRef.current?.stop();
     }
     setPins((prev) => prev.filter((p) => p.id !== id));
     setUploadByPinId((prev) => {
@@ -262,9 +260,8 @@ export default function TeacherMarkingPage() {
   };
 
   const stopRecording = () => {
-    const rec = mediaRecorderRef.current;
-    if (rec && rec.state !== "inactive") {
-      rec.stop();
+    if (mediaRecorderRef.current?.state !== "inactive") {
+      mediaRecorderRef.current?.stop();
     }
   };
 
