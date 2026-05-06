@@ -73,7 +73,7 @@ export default function Home() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: window.location.origin,
+        redirectTo: 'https://glistening-douhua-86d9b9.netlify.app/dashboard', // මේ තියෙන්නේ වෙනස් කරපු තැන
       },
     });
 
