@@ -4,7 +4,8 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Loader2, Upload, X } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 
-const BUCKET = "student-answers";
+// 1. අපි අද හදපු බකට් එකේ නම මෙතනට දැම්මා
+const BUCKET = "student-answers"; 
 const ACCEPTED_MIME = new Set([
   "image/jpeg",
   "image/jpg",
@@ -125,11 +126,15 @@ export function UploadAnswersModal({
 
     try {
       const userId = session.user.id;
+      // ළමයාගේ ඊමේල් එකත් ගමු ෆෝල්ඩර් එකේ නමට දාන්න (හොයාගන්න ලේසි වෙන්න)
+      const userEmail = session.user.email || 'unknown';
 
       for (const file of files) {
         const ext = extensionForFile(file);
         const unique = `${Date.now()}-${crypto.randomUUID()}`;
-        const path = `${userId}/${taskId}/${unique}.${ext}`;
+        
+        // 2. ෆයිල් එක සේව් වෙන තැන ලස්සනට හැදුවා: answers/paper_id/email_unique.jpg
+        const path = `answers/${taskId}/${userEmail}_${unique}.${ext}`;
 
         const { error } = await supabase.storage
           .from(BUCKET)
