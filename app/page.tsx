@@ -73,7 +73,8 @@ export default function Home() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: 'https://glistening-douhua-86d9b9.netlify.app/',
+        // ඔන්න මෙතන තමයි මැජික් එක! දැන් ඔයා ඉන්න තැනටම (Localhost ද, Live ද කියලා) Redirect වෙනවා.
+        redirectTo: `${window.location.origin}/`,
       },
     });
 
