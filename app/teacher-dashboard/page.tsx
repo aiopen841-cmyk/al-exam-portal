@@ -16,9 +16,8 @@ import {
 import { supabase } from "@/lib/supabaseClient";
 
 const TEACHER_AUDIO_BUCKET = "teacher-audio";
-const STUDENT_ANSWERS_BUCKET = "student-answers"; // ළමයින්ගේ බකට් එක ඇඩ් කරා
+const STUDENT_ANSWERS_BUCKET = "student-answers";
 
-// මේක පාවිච්චි වෙන්නේ බකට් එකේ මුකුත් නැත්නම් විතරයි
 const PLACEHOLDER_IMAGE_URL =
   "https://images.unsplash.com/photo-1434030216411-0b793f4b4173?auto=format&fit=crop&w=1600&q=80";
 
@@ -56,7 +55,6 @@ export default function TeacherMarkingPage() {
   const [recordingPinId, setRecordingPinId] = useState<string | null>(null);
   const [uploadByPinId, setUploadByPinId] = useState<Record<string, PinUploadState>>({});
   
-  // අලුතින් දාපු State ටික
   const [paperImage, setPaperImage] = useState<string>(PLACEHOLDER_IMAGE_URL);
   const [isLoadingImage, setIsLoadingImage] = useState(true);
 
@@ -70,7 +68,6 @@ export default function TeacherMarkingPage() {
     pinsRef.current = pins;
   }, [pins]);
 
-  // Auth චෙක් කරන එක සහ අලුත්ම පේපර් එක අදින කෑල්ල
   useEffect(() => {
     let cancelled = false;
 
@@ -86,7 +83,6 @@ export default function TeacherMarkingPage() {
       setUserId(session.user.id);
       setAuthReady(true);
       
-      // අලුත්ම උත්තර පත්‍රය Supabase එකෙන් හොයාගෙන එනවා
       fetchLatestPaper();
     };
 
@@ -110,11 +106,9 @@ export default function TeacherMarkingPage() {
     };
   }, [router]);
 
-  // අලුත්ම ෆොටෝ එක හොයන ෆන්ක්ෂන් එක
   const fetchLatestPaper = async () => {
     setIsLoadingImage(true);
     try {
-      // 1. answers කියන එක ඇතුළේ තියෙන ෆෝල්ඩර හොයනවා
       const { data: folders, error: folderError } = await supabase.storage
         .from(STUDENT_ANSWERS_BUCKET)
         .list("answers");
@@ -127,9 +121,10 @@ export default function TeacherMarkingPage() {
       let latestFile: any = null;
       let latestPath = "";
 
-      // 2. හැම ෆෝල්ඩරේකටම ගිහින් අලුත්ම ෆොටෝ එක මොකක්ද බලනවා
       for (const folder of folders) {
-        if (!folder.id) continue;
+        // මෙතන තමයි Fix එක තියෙන්නේ
+        if (!folder.name || folder.name === ".emptyFolderPlaceholder") continue;
+
         const { data: files } = await supabase.storage
           .from(STUDENT_ANSWERS_BUCKET)
           .list(`answers/${folder.name}`);
@@ -137,8 +132,13 @@ export default function TeacherMarkingPage() {
         if (files) {
           for (const file of files) {
             if (file.name === ".emptyFolderPlaceholder") continue;
-            // අලුත්ම එක හොයාගන්නවා (Date එක බලලා)
-            if (!latestFile || new Date(file.created_at) > new Date(latestFile.created_at)) {
+            const fileTime =
+              file.created_at != null ? new Date(file.created_at).getTime() : 0;
+            const latestTime =
+              latestFile?.created_at != null
+                ? new Date(latestFile.created_at).getTime()
+                : 0;
+            if (!latestFile || fileTime > latestTime) {
               latestFile = file;
               latestPath = `answers/${folder.name}/${file.name}`;
             }
@@ -146,7 +146,6 @@ export default function TeacherMarkingPage() {
         }
       }
 
-      // 3. ෆොටෝ එකක් හම්බවුණා නම් ඒකේ ලින්ක් එක අරන් පේජ් එකට දානවා
       if (latestPath) {
         const { data } = supabase.storage
           .from(STUDENT_ANSWERS_BUCKET)
