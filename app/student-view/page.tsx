@@ -1,340 +1,202 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
-  Award,
-  Headphones,
   Loader2,
   MapPin,
-  RefreshCw,
-  Volume2,
+  Award,
+  CheckCircle2
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 
-/** Same placeholder as teacher marking (`app/teacher/page.tsx`). */
-const PLACEHOLDER_IMAGE_URL =
-  "https://images.unsplash.com/photo-1434030216411-0b793f4b4173?auto=format&fit=crop&w=1600&q=80";
+const STUDENT_ANSWERS_BUCKET = "student-answers";
+const PLACEHOLDER_IMAGE_URL = "https://images.unsplash.com/photo-1434030216411-0b793f4b4173?auto=format&fit=crop&w=1600&q=80";
 
-type FeedbackPinRow = {
+type GradingPin = {
   id: string;
-  pin_number: number;
-  x_percent: number;
-  y_percent: number;
-  audio_url: string;
+  percentX: number;
+  percentY: number;
+  audio_url?: string;
 };
 
-type LoadState = "loading" | "ready" | "error";
+function StudentResultsCanvas() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const paperId = searchParams.get('id'); // 🎯 URL එකෙන් Paper ID එක ගන්නවා
 
-async function fetchFeedbackPins() {
-  return supabase
-    .from("feedback_pins")
-    .select("id, pin_number, x_percent, y_percent, audio_url")
-    .order("pin_number", { ascending: true });
-}
-
-export default function StudentViewPage() {
-  const [pins, setPins] = useState<FeedbackPinRow[]>([]);
-  const [loadState, setLoadState] = useState<LoadState>("loading");
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [playingPinId, setPlayingPinId] = useState<string | null>(null);
-
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-
-  const stopAudio = useCallback(() => {
-    const a = audioRef.current;
-    if (a) {
-      a.pause();
-      a.src = "";
-      audioRef.current = null;
-    }
-    setPlayingPinId(null);
-  }, []);
+  const [authReady, setAuthReady] = useState(false);
+  const [paperImage, setPaperImage] = useState<string>(PLACEHOLDER_IMAGE_URL);
+  const [isLoading, setIsLoading] = useState(true);
+  const [pins, setPins] = useState<GradingPin[]>([]);
+  const [finalMarks, setFinalMarks] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      const { data, error } = await fetchFeedbackPins();
+    const run = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
       if (cancelled) return;
-      if (error) {
-        setLoadError(error.message);
-        setLoadState("error");
-        setPins([]);
+      if (!session?.user?.id) {
+        router.replace("/");
         return;
       }
-      setPins((data ?? []) as FeedbackPinRow[]);
-      setLoadState("ready");
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const handleRetry = () => {
-    setLoadState("loading");
-    setLoadError(null);
-    void (async () => {
-      const { data, error } = await fetchFeedbackPins();
-      if (error) {
-        setLoadError(error.message);
-        setLoadState("error");
-        setPins([]);
+      if (!paperId) {
+        alert("No paper selected!");
+        router.push("/student-dashboard");
         return;
       }
-      setPins((data ?? []) as FeedbackPinRow[]);
-      setLoadState("ready");
-    })();
-  };
-
-  useEffect(() => {
-    return () => {
-      const a = audioRef.current;
-      if (a) {
-        a.pause();
-        a.src = "";
-        audioRef.current = null;
-      }
+      setAuthReady(true);
+      await fetchSpecificPaperAndResults(paperId);
     };
-  }, []);
+    void run();
+    return () => { cancelled = true; };
+  }, [router, paperId]);
 
-  const playPinAudio = (pin: FeedbackPinRow) => {
-    if (!pin.audio_url?.trim()) return;
+  const fetchSpecificPaperAndResults = async (subId: string) => {
+    setIsLoading(true);
+    try {
+      // 1. අදාළ පේපර් එකේ ලකුණු ගන්නවා
+      const { data: subData } = await supabase
+        .from('submissions')
+        .select('total_mark, status')
+        .eq('id', subId)
+        .maybeSingle();
 
-    if (playingPinId === pin.id && audioRef.current) {
-      stopAudio();
-      return;
+      if (subData && subData.total_mark !== null) {
+        setFinalMarks(subData.total_mark.toString());
+      }
+
+      // 2. අදාළ පේපර් එකේ ෆොටෝ එක Storage එකෙන් ගන්නවා
+      const { data: files } = await supabase.storage.from(STUDENT_ANSWERS_BUCKET).list(subId);
+      if (files && files.length > 0) {
+        const actualFile = files.find(f => f.name !== '.emptyFolderPlaceholder');
+        if (actualFile) {
+          const filePath = `${subId}/${actualFile.name}`;
+          const { data } = supabase.storage.from(STUDENT_ANSWERS_BUCKET).getPublicUrl(filePath);
+          setPaperImage(data.publicUrl);
+        }
+      }
+
+      // 3. අදාළ පේපර් එකේ Feedback Pins ටික ගන්නවා
+      const { data: pinsData } = await supabase
+        .from("feedback_pins")
+        .select("*")
+        .eq("submission_id", subId) // 🎯 හරියටම මේ පේපර් එකේ පින් විතරයි!
+        .order("created_at", { ascending: true });
+
+      if (pinsData) {
+        const formattedPins: GradingPin[] = pinsData.map((p) => ({
+          id: crypto.randomUUID(),
+          percentX: p.x_percent,
+          percentY: p.y_percent,
+          audio_url: p.audio_url
+        }));
+        setPins(formattedPins);
+      }
+    } catch (error) {
+      console.error("Error fetching student data:", error);
+    } finally {
+      setIsLoading(false);
     }
-
-    stopAudio();
-
-    const audio = new Audio(pin.audio_url);
-    audioRef.current = audio;
-
-    const onEnd = () => {
-      audio.removeEventListener("ended", onEnd);
-      if (audioRef.current === audio) {
-        audioRef.current = null;
-        setPlayingPinId(null);
-      }
-    };
-
-    audio.addEventListener("ended", onEnd);
-
-    setPlayingPinId(pin.id);
-
-    void audio.play().catch(() => {
-      audio.removeEventListener("ended", onEnd);
-      if (audioRef.current === audio) {
-        audioRef.current = null;
-      }
-      setPlayingPinId(null);
-    });
   };
+
+  const playAudioFeedback = (url?: string) => {
+    if (!url) return;
+    const audio = new Audio(url);
+    audio.play().catch(err => console.error("Playback failed:", err));
+  };
+
+  if (!authReady) return <div className="p-10 text-center font-bold text-indigo-600">Authenticating Student...</div>;
 
   return (
-    <div className="min-h-screen bg-[#f6f7fb] text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-      <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/85 shadow-sm shadow-slate-200/40 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/85 dark:shadow-black/20">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
-          <div className="flex min-w-0 items-center gap-3">
-            <Link
-              href="/dashboard"
-              className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-slate-600"
-              aria-label="Back to dashboard"
-            >
-              <ArrowLeft className="size-5" aria-hidden />
-            </Link>
-            <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-violet-600 text-white shadow-md shadow-violet-600/25 dark:bg-violet-500">
-              <Award className="size-5" aria-hidden />
-            </div>
-            <div className="min-w-0">
-              <h1 className="truncate text-sm font-semibold tracking-tight text-slate-900 dark:text-white sm:text-base">
-                Your graded paper
-              </h1>
-              <p className="truncate text-xs text-slate-500 dark:text-slate-400">
-                Teacher voice feedback · tap a pin to listen
-              </p>
-            </div>
-          </div>
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
+      <header className="sticky top-0 z-30 border-b bg-white/80 backdrop-blur-md p-4 flex items-center justify-between shadow-sm">
+        <div className="flex items-center gap-3">
+          <Link href="/student-dashboard" className="p-2 border rounded-xl hover:bg-slate-100 transition"><ArrowLeft size={20}/></Link>
+          <h1 className="text-lg font-bold tracking-tight text-indigo-900 dark:text-indigo-100">Student Results Portal</h1>
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-        <div className="mb-6 rounded-2xl border border-slate-200/90 bg-gradient-to-br from-white via-white to-violet-50/50 px-4 py-4 text-sm text-slate-600 shadow-sm dark:border-slate-800 dark:from-slate-900/80 dark:via-slate-900/60 dark:to-violet-950/20 dark:text-slate-300 sm:px-5">
-          <p className="flex flex-wrap items-center gap-2">
-            <Headphones className="size-4 shrink-0 text-violet-600 dark:text-violet-400" aria-hidden />
-            <span>
-              <span className="font-medium text-slate-800 dark:text-slate-100">
-                Voice feedback is on the paper
-              </span>{" "}
-              — numbered pins match your teacher&apos;s comments. Click a pin to play the recording.
-            </span>
-          </p>
-        </div>
+      <main className="max-w-7xl mx-auto p-6 grid lg:grid-cols-[1fr_380px] gap-8">
+        <section className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/60 p-5 shadow-xl">
+          <div className="flex justify-between items-center mb-5">
+            <h2 className="text-xs font-black uppercase tracking-widest text-slate-400">Your Marked Submission</h2>
+            {isLoading && <Loader2 className="animate-spin text-indigo-500" size={16}/>}
+          </div>
 
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_min(340px,100%)] lg:items-start">
-          <section
-            aria-label="Graded submission"
-            className="overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-md shadow-slate-200/30 ring-1 ring-slate-200/50 dark:border-slate-800 dark:bg-slate-900/70 dark:shadow-black/30 dark:ring-slate-800/80"
-          >
-            <div className="border-b border-slate-100 bg-slate-50/90 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/80">
-              <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                Submission
-              </p>
-              <p className="mt-0.5 text-sm text-slate-700 dark:text-slate-200">
-                {loadState === "loading"
-                  ? "Loading feedback…"
-                  : loadState === "error"
-                    ? "Could not load feedback"
-                    : `${pins.length} feedback pin${pins.length === 1 ? "" : "s"} on your work`}
-              </p>
+          <div className="relative rounded-2xl overflow-hidden bg-slate-50 ring-1 ring-slate-200">
+            <img src={paperImage} alt="Paper" className="w-full" draggable={false} />
+            
+            {pins.map((pin, i) => (
+              <button 
+                key={pin.id} 
+                onClick={() => playAudioFeedback(pin.audio_url)}
+                className="absolute size-10 bg-indigo-600 border-[3px] border-white rounded-full flex items-center justify-center text-white text-sm font-black shadow-2xl -translate-x-1/2 -translate-y-1/2 transition hover:scale-110 hover:bg-indigo-500 hover:shadow-indigo-500/50 cursor-pointer animate-in zoom-in" 
+                style={{ left: `${pin.percentX}%`, top: `${pin.percentY}%` }}
+                title="Click to play feedback"
+              >
+                {i + 1}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <aside className="flex flex-col gap-6 h-fit">
+          <div className="bg-gradient-to-br from-indigo-600 to-violet-700 rounded-3xl p-6 shadow-xl shadow-indigo-600/20 text-white relative overflow-hidden">
+            <div className="absolute top-0 right-0 p-6 opacity-10"><Award size={100} /></div>
+            <h2 className="font-bold text-lg mb-2 flex items-center gap-2 relative z-10">
+              <CheckCircle2 size={20} /> Final Result
+            </h2>
+            <p className="text-indigo-100 text-sm mb-6 relative z-10">Your submission has been graded by the teacher.</p>
+            
+            <div className="flex items-end gap-2 relative z-10">
+              {finalMarks ? (
+                <>
+                  <span className="text-6xl font-black tracking-tighter leading-none">{finalMarks}</span>
+                  <span className="text-xl font-bold text-indigo-200 mb-1">/ 100</span>
+                </>
+              ) : (
+                <span className="text-xl font-bold text-indigo-200">Pending Grading...</span>
+              )}
             </div>
+          </div>
 
-            <div className="relative bg-slate-100/80 p-3 sm:p-5 dark:bg-slate-950/40">
-              {loadState === "loading" && (
-                <div
-                  className="flex min-h-[280px] flex-col items-center justify-center gap-3 rounded-xl bg-slate-200/40 py-16 dark:bg-slate-800/40"
-                  role="status"
-                  aria-live="polite"
-                >
-                  <Loader2 className="size-10 animate-spin text-violet-600 dark:text-violet-400" aria-hidden />
-                  <p className="text-sm font-medium text-slate-600 dark:text-slate-300">
-                    Loading teacher feedback…
-                  </p>
-                </div>
-              )}
-
-              {loadState === "error" && (
-                <div className="flex min-h-[280px] flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-red-200 bg-red-50/50 px-6 py-12 text-center dark:border-red-900/50 dark:bg-red-950/20">
-                  <p className="text-sm text-red-800 dark:text-red-200">{loadError}</p>
-                  <button
-                    type="button"
-                    onClick={handleRetry}
-                    className="inline-flex items-center gap-2 rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-700 shadow-sm transition hover:bg-red-50 dark:border-red-800 dark:bg-slate-900 dark:text-red-300 dark:hover:bg-red-950/40"
-                  >
-                    <RefreshCw className="size-4" aria-hidden />
-                    Try again
-                  </button>
-                </div>
-              )}
-
-              {loadState === "ready" && (
-                <div className="relative mx-auto max-w-4xl">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={PLACEHOLDER_IMAGE_URL}
-                    alt="Your submitted exam paper with feedback pins"
-                    className="block w-full rounded-xl shadow-lg ring-1 ring-black/5 dark:ring-white/10"
-                    draggable={false}
-                  />
-                  {pins.length === 0 ? (
-                    <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-slate-900/40 backdrop-blur-[2px]">
-                      <p className="rounded-lg bg-white/95 px-4 py-2 text-sm font-medium text-slate-700 shadow-lg dark:bg-slate-900/95 dark:text-slate-200">
-                        No pins yet — your teacher hasn&apos;t added voice feedback.
-                      </p>
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border p-6 shadow-xl">
+            <h2 className="font-bold text-lg mb-6 flex items-center gap-2 text-slate-800 dark:text-slate-100">
+              <MapPin size={20} className="text-indigo-500"/> Teacher Feedback
+            </h2>
+            
+            <div className="space-y-4 max-h-[45vh] overflow-y-auto pr-2">
+              {pins.length === 0 && !isLoading && <p className="text-sm text-slate-400 text-center py-4">No feedback pins found.</p>}
+              {pins.map((pin, i) => (
+                <div key={pin.id} className="p-4 border rounded-2xl bg-slate-50 dark:bg-slate-800/40 border-slate-100 dark:border-slate-800 transition">
+                  <div className="flex justify-between items-center mb-3">
+                    <span className="px-3 py-1 bg-indigo-100 text-indigo-700 text-[10px] font-black rounded-full">PIN {i + 1}</span>
+                  </div>
+                  {pin.audio_url ? (
+                    <div className="w-full mt-2">
+                      <audio controls src={pin.audio_url} className="w-full h-10 rounded-lg outline-none" />
                     </div>
                   ) : (
-                    pins.map((pin) => {
-                      const isPlaying = playingPinId === pin.id;
-                      return (
-                        <button
-                          key={pin.id}
-                          type="button"
-                          aria-label={`Play feedback for pin ${pin.pin_number}`}
-                          aria-pressed={isPlaying}
-                          className={`pointer-events-auto absolute flex size-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white text-xs font-bold text-white shadow-lg outline-none transition-all focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2 dark:border-slate-900 dark:focus-visible:ring-offset-slate-950 sm:size-10 sm:text-sm ${
-                            isPlaying
-                              ? "z-20 scale-110 bg-emerald-600 shadow-emerald-900/40 ring-2 ring-emerald-400/80 animate-pulse"
-                              : "z-10 bg-red-600 shadow-red-900/30 ring-2 ring-red-600/40 hover:scale-105 hover:bg-red-500"
-                          }`}
-                          style={{ left: `${pin.x_percent}%`, top: `${pin.y_percent}%` }}
-                          onClick={() => playPinAudio(pin)}
-                        >
-                          {pin.pin_number}
-                        </button>
-                      );
-                    })
+                    <p className="text-xs text-slate-400 text-center py-2">No audio attached.</p>
                   )}
                 </div>
-              )}
+              ))}
             </div>
-          </section>
-
-          <aside
-            className="rounded-2xl border border-slate-200/90 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900/70"
-            aria-label="Feedback list"
-          >
-            <div className="border-b border-slate-100 px-4 py-3 dark:border-slate-800">
-              <div className="flex items-center gap-2">
-                <MapPin className="size-4 text-red-600 dark:text-red-400" aria-hidden />
-                <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-                  Feedback pins
-                </h2>
-              </div>
-              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                Click a pin on the paper or use the list below to play audio.
-              </p>
-            </div>
-
-            <div className="max-h-[min(70vh,520px)] overflow-y-auto p-3 sm:p-4">
-              {loadState === "loading" && (
-                <div className="flex flex-col items-center gap-2 py-12 text-sm text-slate-500 dark:text-slate-400">
-                  <Loader2 className="size-6 animate-spin text-violet-600" aria-hidden />
-                  Loading…
-                </div>
-              )}
-              {loadState === "error" && (
-                <p className="py-8 text-center text-sm text-red-600 dark:text-red-400">
-                  Could not load pins.
-                </p>
-              )}
-              {loadState === "ready" && pins.length === 0 && (
-                <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50/80 px-4 py-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-400">
-                  No voice feedback pins for this paper yet.
-                </p>
-              )}
-              {loadState === "ready" && pins.length > 0 && (
-                <ul className="space-y-2">
-                  {pins.map((pin) => {
-                    const isPlaying = playingPinId === pin.id;
-                    return (
-                      <li key={pin.id}>
-                        <button
-                          type="button"
-                          onClick={() => playPinAudio(pin)}
-                          className={`flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left text-sm transition ${
-                            isPlaying
-                              ? "border-emerald-200 bg-emerald-50/90 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-100"
-                              : "border-slate-200/90 bg-slate-50/50 text-slate-800 hover:border-violet-200 hover:bg-white dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-100 dark:hover:border-violet-700"
-                          }`}
-                        >
-                          <span
-                            className={`flex size-9 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ${
-                              isPlaying ? "bg-emerald-600 shadow-sm" : "bg-red-600"
-                            }`}
-                          >
-                            {pin.pin_number}
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="font-medium">Pin {pin.pin_number}</span>
-                            <span className="mt-0.5 block text-xs tabular-nums text-slate-500 dark:text-slate-400">
-                              {pin.x_percent.toFixed(1)}% · {pin.y_percent.toFixed(1)}%
-                            </span>
-                          </span>
-                          <Volume2
-                            className={`size-4 shrink-0 ${isPlaying ? "text-emerald-600 dark:text-emerald-400" : "text-slate-400"}`}
-                            aria-hidden
-                          />
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </div>
-          </aside>
-        </div>
+          </div>
+        </aside>
       </main>
     </div>
+  );
+}
+
+// Next.js SearchParams Wrapper
+export default function StudentViewPage() {
+  return (
+    <Suspense fallback={<div className="p-10 text-center font-bold text-indigo-600">Loading Portal...</div>}>
+      <StudentResultsCanvas />
+    </Suspense>
   );
 }

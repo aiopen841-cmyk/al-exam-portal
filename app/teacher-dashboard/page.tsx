@@ -1,29 +1,29 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, Suspense } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
   Loader2,
   MapPin,
   Mic,
-  PenLine,
   Square,
   Trash2,
-  AlertCircle
+  CheckCircle2,
+  Award
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 
 const TEACHER_AUDIO_BUCKET = "teacher-audio";
 const STUDENT_ANSWERS_BUCKET = "student-answers";
-
 const PLACEHOLDER_IMAGE_URL = "https://images.unsplash.com/photo-1434030216411-0b793f4b4173?auto=format&fit=crop&w=1600&q=80";
 
 type GradingPin = {
   id: string;
   percentX: number;
   percentY: number;
+  audio_url?: string;
 };
 
 type PinUploadState =
@@ -32,8 +32,11 @@ type PinUploadState =
   | { status: "done"; path: string }
   | { status: "error"; message: string };
 
-export default function TeacherMarkingPage() {
+function MarkingCanvas() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const paperId = searchParams.get('id'); // 🎯 URL එකෙන් Paper ID එක ගන්නවා
+
   const [authReady, setAuthReady] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [pins, setPins] = useState<GradingPin[]>([]);
@@ -42,7 +45,9 @@ export default function TeacherMarkingPage() {
   
   const [paperImage, setPaperImage] = useState<string>(PLACEHOLDER_IMAGE_URL);
   const [isLoadingImage, setIsLoadingImage] = useState(true);
-  const [scanStatus, setScanStatus] = useState<string>("Initializing scan...");
+
+  const [marks, setMarks] = useState<string>("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const streamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -55,7 +60,6 @@ export default function TeacherMarkingPage() {
 
   useEffect(() => {
     let cancelled = false;
-
     const run = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (cancelled) return;
@@ -63,109 +67,106 @@ export default function TeacherMarkingPage() {
         router.replace("/");
         return;
       }
+      if (!paperId) {
+        alert("No paper selected!");
+        router.push("/teacher");
+        return;
+      }
       setUserId(session.user.id);
       setAuthReady(true);
       
-      // ලොග් වුණ ගමන් සුපිරි ස්කෑන් එක පටන් ගන්නවා
-      await fetchLatestPaper();
+      // 🎯 අදාළ පේපර් එකට අදාල දේවල් විතරක් ගන්නවා
+      await fetchSpecificPaper(paperId);
+      await fetchExistingPins(paperId);
     };
-
     void run();
+    return () => { cancelled = true; };
+  }, [router, paperId]);
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (cancelled) return;
-      if (session?.user?.id) {
-        setUserId(session.user.id);
-        setAuthReady(true);
-      }
-    });
+  const fetchExistingPins = async (subId: string) => {
+    const { data, error } = await supabase
+      .from("feedback_pins")
+      .select("*")
+      .eq("submission_id", subId) // 🎯 මේ පේපර් එකේ පින් විතරක් ගන්නවා
+      .order("created_at", { ascending: true });
 
-    return () => {
-      cancelled = true;
-      subscription.unsubscribe();
-    };
-  }, [router]);
+    if (data) {
+      const formattedPins: GradingPin[] = data.map((p) => ({
+        id: crypto.randomUUID(),
+        percentX: p.x_percent,
+        percentY: p.y_percent,
+        audio_url: p.audio_url
+      }));
+      setPins(formattedPins);
+      const uploadStates: Record<string, PinUploadState> = {};
+      formattedPins.forEach((p) => {
+        if (p.audio_url) uploadStates[p.id] = { status: "done", path: p.audio_url };
+      });
+      setUploadByPinId(uploadStates);
+    }
+  };
 
-  const fetchLatestPaper = async () => {
+  const fetchSpecificPaper = async (subId: string) => {
     setIsLoadingImage(true);
-    setScanStatus("Scanning bucket...");
-    console.log("🚀 STARTING SUPER SCAN...");
-
     try {
-      // 1. මුලින්ම බකට් එකේ රූට් එකේ තියෙන ඔක්කොම ලිස්ට් කරමු
-      const { data: rootItems, error: rootError } = await supabase.storage
-        .from(STUDENT_ANSWERS_BUCKET)
-        .list("");
+      // ලකුණු තියෙනවද බලනවා
+      const { data: subData } = await supabase
+        .from('submissions')
+        .select('total_mark')
+        .eq('id', subId)
+        .maybeSingle();
 
-      if (rootError) throw rootError;
+      if (subData && subData.total_mark !== null) {
+        setMarks(subData.total_mark.toString());
+      }
 
-      // Console එකේ බකට් එකේ තියෙන දේවල් වල නම් මෙතනින් බලාගන්න පුළුවන්
-      console.log("📂 Items found in root:", rootItems?.map(i => i.name));
-
-      let allFoundFiles: { path: string; created_at: string }[] = [];
-
-      for (const item of rootItems || []) {
-        if (item.name === ".emptyFolderPlaceholder") continue;
-
-        // මේක ෆයිල් එකක් නම් (metadata තියෙනවා නම්)
-        if (item.metadata) {
-          allFoundFiles.push({ path: item.name, created_at: item.created_at ?? "" });
-        } else {
-          // මේක ෆෝල්ඩර් එකක් වෙන්න ඕනේ, ඒක ඇතුළත් බලමු
-          console.log(`📂 Scanning sub-folder: ${item.name}`);
-          const { data: subFiles } = await supabase.storage
-            .from(STUDENT_ANSWERS_BUCKET)
-            .list(item.name);
-          
-          subFiles?.forEach(f => {
-            if (f.name !== ".emptyFolderPlaceholder") {
-              allFoundFiles.push({ path: `${item.name}/${f.name}`, created_at: f.created_at ?? "" });
-            }
-          });
+      // බකට් එකෙන් අදාළ ෆෝල්ඩර් එකේ ෆොටෝ එක ගන්නවා
+      const { data: files } = await supabase.storage.from(STUDENT_ANSWERS_BUCKET).list(subId);
+      if (files && files.length > 0) {
+        const actualFile = files.find(f => f.name !== '.emptyFolderPlaceholder');
+        if (actualFile) {
+          const filePath = `${subId}/${actualFile.name}`;
+          const { data } = supabase.storage.from(STUDENT_ANSWERS_BUCKET).getPublicUrl(filePath);
+          setPaperImage(data.publicUrl);
         }
-      }
-
-      console.log("📄 Total files detected:", allFoundFiles);
-
-      if (allFoundFiles.length > 0) {
-        // අලුත්ම එක තෝරාගැනීම
-        allFoundFiles.sort((a, b) => 
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-        );
-        
-        const latest = allFoundFiles[0];
-        const { data } = supabase.storage
-          .from(STUDENT_ANSWERS_BUCKET)
-          .getPublicUrl(latest.path);
-        
-        console.log("🎯 SUCCESS! Loading URL:", data.publicUrl);
-        setPaperImage(data.publicUrl);
-        setScanStatus("Paper loaded!");
       } else {
-        console.warn("⚠️ No valid files found.");
-        setScanStatus("No submissions found.");
+        alert("Could not find the uploaded image for this paper.");
       }
-
-    } catch (err) {
-      console.error("❌ Scan Error:", err);
-      setScanStatus("Scan failed.");
     } finally {
       setIsLoadingImage(false);
     }
   };
 
-  const handleImageClick = (e: React.MouseEvent<HTMLImageElement>) => {
-    const el = e.currentTarget;
-    const rect = el.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * 100;
-    const y = ((e.clientY - rect.top) / rect.height) * 100;
-    setPins((prev) => [
-      ...prev,
-      { id: crypto.randomUUID(), percentX: Math.min(100, Math.max(0, x)), percentY: Math.min(100, Math.max(0, y)) },
-    ]);
+  const handleRemovePin = async (pinId: string, audioUrl?: string) => {
+    setPins(prev => prev.filter(p => p.id !== pinId));
+    if (audioUrl) {
+      await supabase.from("feedback_pins").delete().eq("audio_url", audioUrl);
+    }
   };
 
-  const removePin = (id: string) => setPins((prev) => prev.filter((p) => p.id !== id));
+  const uploadBlobForPin = async (pinId: string, pinIndex: number, percentX: number, percentY: number, blob: Blob) => {
+    if (!userId || !paperId) return;
+    setUploadByPinId((prev) => ({ ...prev, [pinId]: { status: "uploading" } }));
+    const path = `${userId}/pin-${Date.now()}.webm`;
+    const { error: storageError, data: storageData } = await supabase.storage
+      .from(TEACHER_AUDIO_BUCKET)
+      .upload(path, blob, { contentType: 'audio/webm' });
+
+    if (storageError) return;
+    const { data: { publicUrl } } = supabase.storage.from(TEACHER_AUDIO_BUCKET).getPublicUrl(storageData.path);
+
+    // 🎯 සේව් කරද්දී submission_id එකත් යවනවා
+    await supabase.from("feedback_pins").insert({
+      submission_id: paperId, 
+      pin_number: pinIndex + 1,
+      x_percent: percentX,
+      y_percent: percentY,
+      audio_url: publicUrl,
+    });
+
+    setPins(prev => prev.map(p => p.id === pinId ? { ...p, audio_url: publicUrl } : p));
+    setUploadByPinId((prev) => ({ ...prev, [pinId]: { status: "done", path: storageData.path } }));
+  };
 
   const startRecording = async (pinId: string) => {
     try {
@@ -175,123 +176,161 @@ export default function TeacherMarkingPage() {
       chunksRef.current = [];
       recorder.ondataavailable = (ev) => chunksRef.current.push(ev.data);
       recorder.onstop = () => {
-        setRecordingPinId(null);
-        // මෙතනට පස්සේ Audio Upload logic එක දාන්න පුළුවන්
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        const idx = pinsRef.current.findIndex(p => p.id === pinId);
+        if (idx !== -1) uploadBlobForPin(pinId, idx, pinsRef.current[idx].percentX, pinsRef.current[idx].percentY, blob);
       };
       mediaRecorderRef.current = recorder;
       recorder.start();
       setRecordingPinId(pinId);
     } catch (err) {
-      alert("Microphone access denied!");
+      alert("Microphone denied!");
     }
   };
 
   const stopRecording = () => {
     mediaRecorderRef.current?.stop();
     streamRef.current?.getTracks().forEach(t => t.stop());
+    setRecordingPinId(null);
   };
 
-  if (!authReady) return <div className="flex h-screen items-center justify-center font-medium">Authenticating...</div>;
+  const handleImageClick = (e: React.MouseEvent<HTMLImageElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    setPins((prev) => [...prev, { id: crypto.randomUUID(), percentX: x, percentY: y }]);
+  };
+
+  const handleFinalSubmit = async () => {
+    if (!marks || isNaN(Number(marks))) {
+      alert("Please enter a valid mark!");
+      return;
+    }
+    if (!paperId) return;
+    
+    setIsSubmitting(true);
+    try {
+      const { error } = await supabase
+        .from('submissions')
+        .update({ total_mark: Number(marks), status: 'Marked' })
+        .eq('id', paperId);
+
+      if (error) throw error;
+      alert(`🎉 Final Grade: ${marks}/100 submitted successfully!`);
+      router.push('/teacher'); // 🎯 Submit කරාම ආයේ Inbox එකට යනවා
+    } catch (err: any) {
+      alert("❌ Database Error: " + err.message); 
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  if (!authReady) return <div className="p-10 text-center font-bold">Authenticating...</div>;
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
       <header className="sticky top-0 z-30 border-b bg-white/80 backdrop-blur-md p-4 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-3">
-          <Link href="/dashboard" className="p-2 border rounded-xl hover:bg-slate-100 transition"><ArrowLeft size={20}/></Link>
-          <div className="flex flex-col">
-            <h1 className="text-sm font-bold uppercase tracking-tight text-slate-500">Teacher Panel</h1>
-            <p className="text-lg font-black leading-none">Marking Canvas</p>
-          </div>
-        </div>
-        <div className="text-xs font-medium px-3 py-1 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center gap-2">
-          <div className={`size-2 rounded-full ${paperImage !== PLACEHOLDER_IMAGE_URL ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-          {scanStatus}
+          <Link href="/teacher" className="p-2 border rounded-xl hover:bg-slate-100 transition"><ArrowLeft size={20}/></Link>
+          <h1 className="text-lg font-bold tracking-tight">Teacher Marking Canvas</h1>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto p-6 grid lg:grid-cols-[1fr_380px] gap-8">
-        {/* Paper Display */}
-        <section className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/60 p-5 shadow-2xl shadow-slate-200/40 dark:shadow-none">
-          <div className="flex justify-between items-center mb-5 border-b pb-4 dark:border-slate-800">
-            <h2 className="text-xs font-black uppercase tracking-widest text-slate-400">Exam Submission</h2>
-            {isLoadingImage && <Loader2 className="animate-spin text-teal-500" size={18}/>}
+        <section className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/60 p-5 shadow-xl">
+          <div className="flex justify-between items-center mb-5">
+            <h2 className="text-xs font-black uppercase tracking-widest text-slate-400">Submission Preview</h2>
+            {isLoadingImage && <Loader2 className="animate-spin text-teal-500" size={16}/>}
           </div>
 
-          <div className="relative rounded-2xl overflow-hidden bg-slate-50 dark:bg-slate-800 ring-1 ring-slate-200 dark:ring-slate-700">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img 
-              src={paperImage} 
-              alt="Student Submission" 
-              className={`w-full cursor-crosshair transition-all duration-700 ${isLoadingImage ? 'opacity-40 blur-md' : 'opacity-100 blur-0'}`}
-              onClick={handleImageClick}
-              draggable={false}
-            />
-            
-            {/* Display Pins */}
+          <div className="relative rounded-2xl overflow-hidden bg-slate-50 ring-1 ring-slate-200">
+            <img src={paperImage} alt="Paper" className="w-full cursor-crosshair" onClick={handleImageClick} draggable={false} />
             {pins.map((pin, i) => (
               <div 
-                key={pin.id}
-                className="absolute size-9 bg-red-600 border-[3px] border-white rounded-full flex items-center justify-center text-white text-xs font-black shadow-2xl -translate-x-1/2 -translate-y-1/2 animate-in zoom-in duration-300"
+                key={pin.id} 
+                className="absolute size-9 bg-red-600 border-[3px] border-white rounded-full flex items-center justify-center text-white text-xs font-black shadow-2xl -translate-x-1/2 -translate-y-1/2" 
                 style={{ left: `${pin.percentX}%`, top: `${pin.percentY}%` }}
               >
                 {i + 1}
               </div>
             ))}
-
-            {/* Error Message if still placeholder */}
-            {paperImage === PLACEHOLDER_IMAGE_URL && !isLoadingImage && (
-              <div className="absolute inset-0 flex items-center justify-center bg-white/60 backdrop-blur-sm p-6 text-center">
-                <div className="flex flex-col items-center gap-3">
-                  <AlertCircle className="text-amber-500" size={40}/>
-                  <p className="text-sm font-bold text-slate-700">No student papers detected yet.<br/>Showing default view.</p>
-                  <button onClick={fetchLatestPaper} className="mt-2 text-xs font-bold text-teal-600 underline">Try Scanning Again</button>
-                </div>
-              </div>
-            )}
           </div>
         </section>
 
-        {/* Sidebar */}
-        <aside className="space-y-6">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/60 p-6 shadow-xl shadow-slate-200/40 dark:shadow-none h-fit">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="p-2 bg-red-50 dark:bg-red-900/20 rounded-xl text-red-600"><MapPin size={20}/></div>
-              <h2 className="font-bold text-lg tracking-tight">Feedback Pins</h2>
+        <aside className="flex flex-col gap-6 h-fit">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border p-6 shadow-xl">
+            <h2 className="font-bold text-lg mb-6 flex items-center gap-2"><MapPin size={20} className="text-red-500"/> Feedback Pins</h2>
+            <div className="space-y-4 max-h-[50vh] overflow-y-auto pr-2">
+              {pins.length === 0 && <p className="text-sm text-slate-400 text-center py-4">No pins added yet.</p>}
+              {pins.map((pin, i) => (
+                <div key={pin.id} className="p-4 border rounded-2xl bg-slate-50 dark:bg-slate-800/40 border-slate-100 dark:border-slate-800 transition">
+                  <div className="flex justify-between items-center mb-4">
+                    <span className="px-3 py-1 bg-red-600 text-white text-[10px] font-black rounded-full shadow-sm">PIN {i + 1}</span>
+                    <button onClick={() => handleRemovePin(pin.id, pin.audio_url)} className="text-slate-400 hover:text-red-600 p-1 transition-colors"><Trash2 size={16}/></button>
+                  </div>
+
+                  {recordingPinId === pin.id ? (
+                    <button onClick={stopRecording} className="w-full py-3 bg-red-600 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 animate-pulse shadow-md">
+                      <Square size={14} fill="white"/> Stop & Save
+                    </button>
+                  ) : pin.audio_url ? (
+                    <div className="w-full mt-2">
+                      <audio controls src={pin.audio_url} className="w-full h-10 rounded-lg outline-none" />
+                    </div>
+                  ) : (
+                    <button 
+                      onClick={() => startRecording(pin.id)} 
+                      disabled={uploadByPinId[pin.id]?.status === "uploading"} 
+                      className="w-full py-3 bg-slate-900 dark:bg-teal-600 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition hover:bg-slate-800"
+                    >
+                      <Mic size={14}/> {uploadByPinId[pin.id]?.status === "uploading" ? "Uploading..." : "Record Voice Feedback"}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border p-6 shadow-xl border-teal-100 dark:border-teal-900/50">
+            <h2 className="font-bold text-lg mb-4 flex items-center gap-2 text-teal-700 dark:text-teal-400">
+              <Award size={20} /> Final Grading
+            </h2>
+            <div className="flex items-center gap-4 mb-6 bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-100 dark:border-slate-800">
+              <input 
+                type="number" 
+                value={marks} 
+                onChange={(e) => setMarks(e.target.value)} 
+                placeholder="00" 
+                min="0"
+                max="100"
+                className="w-20 p-3 border-2 border-slate-200 focus:border-teal-500 rounded-xl text-center font-black text-xl text-slate-800 outline-none transition bg-white dark:bg-slate-900 dark:text-white dark:border-slate-700" 
+              />
+              <span className="text-sm font-bold text-slate-400 uppercase tracking-widest">/ 100 Marks</span>
             </div>
 
-            <div className="space-y-4">
-              {pins.length === 0 ? (
-                <div className="py-16 border-2 border-dashed border-slate-100 dark:border-slate-800 rounded-3xl text-center flex flex-col items-center gap-3">
-                  <PenLine className="text-slate-200 dark:text-slate-700" size={48}/>
-                  <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">Click the paper<br/>to add pins</p>
-                </div>
+            <button 
+              onClick={handleFinalSubmit} 
+              disabled={isSubmitting} 
+              className="w-full py-4 bg-teal-600 text-white rounded-xl text-sm font-black uppercase tracking-widest flex items-center justify-center gap-2 transition hover:bg-teal-700 shadow-lg shadow-teal-500/30 disabled:opacity-70 disabled:cursor-not-allowed"
+            >
+              {isSubmitting ? (
+                <><Loader2 size={18} className="animate-spin" /> Saving...</>
               ) : (
-                pins.map((pin, i) => (
-                  <div key={pin.id} className="p-4 border border-slate-100 dark:border-slate-800 rounded-2xl bg-slate-50 dark:bg-slate-800/40 transition hover:ring-2 hover:ring-red-500/20">
-                    <div className="flex justify-between items-center mb-4">
-                      <span className="px-3 py-1 bg-red-600 text-white text-[10px] font-black rounded-full shadow-lg shadow-red-500/30">PIN {i + 1}</span>
-                      <button onClick={() => removePin(pin.id)} className="p-2 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-lg transition"><Trash2 size={16}/></button>
-                    </div>
-                    
-                    {recordingPinId === pin.id ? (
-                      <button onClick={stopRecording} className="w-full py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-red-200 dark:shadow-none transition-all scale-[0.98]">
-                        <Square size={14} fill="white"/> Stop & Review
-                      </button>
-                    ) : (
-                      <button 
-                        onClick={() => startRecording(pin.id)} 
-                        className="w-full py-3 bg-slate-900 dark:bg-teal-600 hover:bg-slate-800 dark:hover:bg-teal-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all active:scale-95"
-                      >
-                        <Mic size={14}/> Record Feedback
-                      </button>
-                    )}
-                  </div>
-                ))
+                <><CheckCircle2 size={18} /> Submit Final Grade</>
               )}
-            </div>
+            </button>
           </div>
         </aside>
       </main>
     </div>
+  );
+}
+
+// Next.js වල SearchParams පාවිච්චි කරද්දී මේක දාන්නම ඕනේ 
+export default function TeacherMarkingPageWrapper() {
+  return (
+    <Suspense fallback={<div className="p-10 text-center font-bold">Loading Canvas...</div>}>
+      <MarkingCanvas />
+    </Suspense>
   );
 }

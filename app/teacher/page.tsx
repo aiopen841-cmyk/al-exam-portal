@@ -1,76 +1,42 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  ArrowLeft,
+  Inbox,
   CheckCircle2,
+  Clock,
+  Hand,
   Loader2,
-  MapPin,
-  Mic,
-  PenLine,
-  Square,
-  Trash2,
+  LogOut,
+  BookOpen,
+  UserCheck
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 
-const TEACHER_AUDIO_BUCKET = "teacher-audio";
-
-const PLACEHOLDER_IMAGE_URL =
-  "https://images.unsplash.com/photo-1434030216411-0b793f4b4173?auto=format&fit=crop&w=1600&q=80";
-
-type GradingPin = {
+type Submission = {
   id: string;
-  percentX: number;
-  percentY: number;
+  created_at: string;
+  status: string;
+  total_mark: number | null;
+  teacher_id: string | null;
+  student_id: string;
 };
 
-type PinUploadState =
-  | { status: "idle" }
-  | { status: "uploading" }
-  | { status: "done"; path: string }
-  | { status: "error"; message: string };
-
-function pickRecorderMimeType(): string | undefined {
-  const candidates = [
-    "audio/webm;codecs=opus",
-    "audio/webm",
-    "audio/mp4",
-  ];
-  for (const t of candidates) {
-    if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(t)) {
-      return t;
-    }
-  }
-  return undefined;
-}
-
-export default function TeacherMarkingPage() {
+export default function TeacherInboxPage() {
   const router = useRouter();
   const [authReady, setAuthReady] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
-  const [pins, setPins] = useState<GradingPin[]>([]);
-  const [recordingPinId, setRecordingPinId] = useState<string | null>(null);
-  const [uploadByPinId, setUploadByPinId] = useState<Record<string, PinUploadState>>({});
-
-  const streamRef = useRef<MediaStream | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<BlobPart[]>([]);
-  const pinsRef = useRef<GradingPin[]>(pins);
-  const skipUploadRef = useRef(false);
-
-  useEffect(() => {
-    pinsRef.current = pins;
-  }, [pins]);
+  
+  const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [claimingId, setClaimingId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-
     const run = async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      const { data: { session } } = await supabase.auth.getSession();
       if (cancelled) return;
       if (!session?.user?.id) {
         router.replace("/");
@@ -78,394 +44,179 @@ export default function TeacherMarkingPage() {
       }
       setUserId(session.user.id);
       setAuthReady(true);
+      await fetchAllSubmissions();
     };
-
     void run();
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (cancelled) return;
-      if (!session?.user?.id) {
-        router.replace("/");
-        return;
-      }
-      setUserId(session.user.id);
-      setAuthReady(true);
-    });
-
-    return () => {
-      cancelled = true;
-      subscription.unsubscribe();
-    };
+    return () => { cancelled = true; };
   }, [router]);
 
-  const stopMediaTracks = useCallback(() => {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      skipUploadRef.current = true;
-      mediaRecorderRef.current?.stop();
-      stopMediaTracks();
-    };
-  }, [stopMediaTracks]);
-
-  const handleImageClick = (e: React.MouseEvent<HTMLImageElement>) => {
-    const el = e.currentTarget;
-    const rect = el.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * 100;
-    const y = ((e.clientY - rect.top) / rect.height) * 100;
-    const clampedX = Math.min(100, Math.max(0, x));
-    const clampedY = Math.min(100, Math.max(0, y));
-    setPins((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        percentX: clampedX,
-        percentY: clampedY,
-      },
-    ]);
-  };
-
-  const removePin = (id: string) => {
-    if (recordingPinId === id && mediaRecorderRef.current?.state !== "inactive") {
-      skipUploadRef.current = true;
-      mediaRecorderRef.current?.stop();
-    }
-    setPins((prev) => prev.filter((p) => p.id !== id));
-    setUploadByPinId((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-  };
-
-  const uploadBlobForPin = async (
-    pinId: string,
-    pinIndex: number,
-    percentX: number,
-    percentY: number,
-    blob: Blob,
-  ) => {
-    const uid = userId;
-    if (!uid) {
-      setUploadByPinId((prev) => ({
-        ...prev,
-        [pinId]: { status: "error", message: "Not signed in." },
-      }));
-      return;
-    }
-
-    setUploadByPinId((prev) => ({ ...prev, [pinId]: { status: "uploading" } }));
-
-    const ext =
-      blob.type.includes("webm")
-        ? "webm"
-        : blob.type.includes("mp4") || blob.type.includes("m4a")
-          ? "m4a"
-          : "webm";
-    const path = `${uid}/pin-${pinIndex + 1}-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${ext}`;
-
-    const { error, data } = await supabase.storage
-      .from(TEACHER_AUDIO_BUCKET)
-      .upload(path, blob, {
-        cacheControl: "3600",
-        upsert: false,
-        contentType: blob.type || "audio/webm",
-      });
-
-    if (error) {
-      setUploadByPinId((prev) => ({
-        ...prev,
-        [pinId]: { status: "error", message: error.message },
-      }));
-      return;
-    }
-
-    const {
-      data: { publicUrl },
-    } = supabase.storage.from(TEACHER_AUDIO_BUCKET).getPublicUrl(data.path);
-
-    const pinNumber = pinIndex + 1;
-    const { error: insertError } = await supabase.from("feedback_pins").insert({
-      pin_number: pinNumber,
-      x_percent: percentX,
-      y_percent: percentY,
-      audio_url: publicUrl,
-    });
-
-    if (insertError) {
-      setUploadByPinId((prev) => ({
-        ...prev,
-        [pinId]: { status: "error", message: insertError.message },
-      }));
-      return;
-    }
-
-    setUploadByPinId((prev) => ({
-      ...prev,
-      [pinId]: { status: "done", path: data.path },
-    }));
-  };
-
-  const startRecording = async (pinId: string) => {
-    if (recordingPinId) return;
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      window.alert("Microphone recording is not supported in this browser.");
-      return;
-    }
-
+  const fetchAllSubmissions = async () => {
+    setIsLoading(true);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      const mimeType = pickRecorderMimeType();
-      const recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
-        : new MediaRecorder(stream);
+      const { data, error } = await supabase
+        .from('submissions')
+        .select('*')
+        .order('created_at', { ascending: false });
 
-      chunksRef.current = [];
-      recorder.ondataavailable = (ev) => {
-        if (ev.data.size > 0) chunksRef.current.push(ev.data);
-      };
-
-      recorder.onstop = () => {
-        stopMediaTracks();
-        const blobType = recorder.mimeType || mimeType || "audio/webm";
-        const blob = new Blob(chunksRef.current, { type: blobType });
-        chunksRef.current = [];
-        mediaRecorderRef.current = null;
-        setRecordingPinId(null);
-        const skip = skipUploadRef.current;
-        skipUploadRef.current = false;
-        if (skip || blob.size === 0) return;
-        const list = pinsRef.current;
-        const idx = list.findIndex((p) => p.id === pinId);
-        if (idx < 0) return;
-        const pin = list[idx];
-        void uploadBlobForPin(pinId, idx, pin.percentX, pin.percentY, blob);
-      };
-
-      mediaRecorderRef.current = recorder;
-      recorder.start();
-      setRecordingPinId(pinId);
+      if (data) setSubmissions(data);
     } catch (err) {
-      stopMediaTracks();
-      const msg = err instanceof Error ? err.message : "Could not access microphone.";
-      window.alert(msg);
+      console.error("Error fetching submissions:", err);
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const stopRecording = () => {
-    if (mediaRecorderRef.current?.state !== "inactive") {
-      mediaRecorderRef.current?.stop();
+  // 🎯 පේපර් එකක් ටීචර් තමන්ගේ නමට බාරගන්න ලොජික් එක
+  const handleClaimPaper = async (submissionId: string) => {
+    if (!userId) return;
+    setClaimingId(submissionId);
+    
+    try {
+      const { error } = await supabase
+        .from('submissions')
+        .update({ teacher_id: userId })
+        .eq('id', submissionId);
+
+      if (error) throw error;
+      
+      // සාර්ථක නම් ලිස්ට් එක ආයෙත් අප්ඩේට් කරනවා
+      await fetchAllSubmissions();
+    } catch (err: any) {
+      console.error("Error claiming paper:", err);
+      alert("❌ Failed to claim paper: " + err.message);
+    } finally {
+      setClaimingId(null);
     }
   };
 
-  if (!authReady) {
-    return (
-      <div className="flex min-h-screen flex-col bg-[#f6f7fb] text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-        <header className="border-b border-slate-200/80 bg-white/90 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/90">
-          <div className="mx-auto flex h-14 max-w-6xl items-center px-4 sm:px-6 lg:px-8">
-            <span className="text-sm font-medium text-slate-500 dark:text-slate-400">
-              Loading workspace…
-            </span>
-          </div>
-        </header>
-      </div>
-    );
-  }
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    router.push('/');
+  };
+
+  // පේපර්ස් වර්ග කරනවා
+  const availablePapers = submissions.filter(s => s.status === 'Pending' && !s.teacher_id);
+  const myClaimedPapers = submissions.filter(s => s.status === 'Pending' && s.teacher_id === userId);
+  const myMarkedPapers = submissions.filter(s => s.status === 'Marked' && s.teacher_id === userId);
+
+  if (!authReady) return <div className="p-10 text-center font-bold text-teal-600">Loading Teacher Portal...</div>;
 
   return (
-    <div className="min-h-screen bg-[#f6f7fb] text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-      <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/85 shadow-sm shadow-slate-200/40 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/85 dark:shadow-black/20">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
-          <div className="flex min-w-0 items-center gap-3">
-            <Link
-              href="/dashboard"
-              className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-slate-600"
-              aria-label="Back to dashboard"
-            >
-              <ArrowLeft className="size-5" aria-hidden />
-            </Link>
-            <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-teal-600 text-white shadow-md shadow-teal-600/25 dark:bg-teal-500">
-              <PenLine className="size-5" aria-hidden />
-            </div>
-            <div className="min-w-0">
-              <h1 className="truncate text-sm font-semibold tracking-tight text-slate-900 dark:text-white sm:text-base">
-                Teacher marking
-              </h1>
-              <p className="truncate text-xs text-slate-500 dark:text-slate-400">
-                Image grading · voice notes · Supabase audio
-              </p>
-            </div>
-          </div>
-        </div>
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
+      <header className="sticky top-0 z-30 border-b bg-white/80 backdrop-blur-md p-4 flex items-center justify-between shadow-sm">
+        <h1 className="text-xl font-black tracking-tight text-teal-900 dark:text-teal-100 flex items-center gap-2">
+          <BookOpen className="text-teal-600" /> Teacher Portal
+        </h1>
+        <button onClick={handleLogout} className="p-2 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-xl transition flex items-center gap-2 text-sm font-bold">
+          <LogOut size={16} /> Logout
+        </button>
       </header>
 
-      <main className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-        <div className="mb-6 rounded-2xl border border-slate-200/90 bg-white/80 px-4 py-3 text-sm text-slate-600 shadow-sm dark:border-slate-800 dark:bg-slate-900/60 dark:text-slate-300 sm:px-5">
-          <p>
-            <span className="font-medium text-slate-800 dark:text-slate-100">
-              Drop pins on the paper
-            </span>{" "}
-            — click anywhere on the image. Each pin gets a numbered marker and an optional voice
-            note, uploaded to the{" "}
-            <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-mono text-slate-800 dark:bg-slate-800 dark:text-slate-200">
-              teacher-audio
-            </code>{" "}
-            bucket after you stop recording.
-          </p>
-        </div>
+      <main className="max-w-6xl mx-auto p-6 grid lg:grid-cols-[1fr_350px] gap-8 mt-6">
+        
+        {/* 🎯 වම් පැත්ත: මගේ ගොඩ (My Workspace) */}
+        <div className="space-y-8">
+          
+          {/* My Claimed Papers (බලන්න තියෙන ඒවා) */}
+          <section className="bg-white dark:bg-slate-900 rounded-3xl border border-teal-100 dark:border-teal-900/50 p-6 shadow-xl">
+            <h2 className="font-bold text-lg mb-6 flex items-center gap-2 text-teal-800 dark:text-teal-400 border-b border-teal-50 pb-4">
+              <UserCheck size={20} className="text-teal-500"/> My Assigned Papers (To Grade)
+            </h2>
 
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_min(380px,100%)] lg:items-start">
-          <section
-            aria-label="Exam paper preview"
-            className="overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-sm ring-1 ring-slate-200/40 dark:border-slate-800 dark:bg-slate-900/70 dark:ring-slate-800/80"
-          >
-            <div className="border-b border-slate-100 bg-slate-50/90 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/80">
-              <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                Submission preview
-              </p>
-              <p className="mt-0.5 text-sm text-slate-700 dark:text-slate-200">
-                Click to place feedback pins ({pins.length} placed)
-              </p>
-            </div>
-            <div className="relative bg-slate-100/80 p-3 sm:p-4 dark:bg-slate-950/40">
-              <div className="relative mx-auto max-w-4xl">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={PLACEHOLDER_IMAGE_URL}
-                  alt="Sample exam paper for grading"
-                  className="block w-full cursor-crosshair rounded-lg shadow-md ring-1 ring-black/5 dark:ring-white/10"
-                  onClick={handleImageClick}
-                  draggable={false}
-                />
-                {pins.map((pin, i) => (
-                  <button
-                    key={pin.id}
-                    type="button"
-                    aria-label={`Pin ${i + 1} at ${pin.percentX.toFixed(0)}%, ${pin.percentY.toFixed(0)}%`}
-                    className="pointer-events-auto absolute flex size-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-red-600 text-xs font-bold text-white shadow-lg shadow-red-900/30 outline-none ring-2 ring-red-600/40 transition hover:scale-105 hover:bg-red-500 focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 dark:border-slate-900 dark:ring-red-500/50 dark:focus-visible:ring-offset-slate-950"
-                    style={{ left: `${pin.percentX}%`, top: `${pin.percentY}%` }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {i + 1}
-                  </button>
+            {isLoading ? (
+              <div className="flex justify-center py-8"><Loader2 className="animate-spin text-teal-500" /></div>
+            ) : myClaimedPapers.length === 0 ? (
+              <p className="text-center py-8 text-slate-400 text-sm">You haven't claimed any papers to grade yet.</p>
+            ) : (
+              <div className="space-y-4">
+                {myClaimedPapers.map((sub, i) => (
+                  <div key={sub.id} className="p-4 border border-teal-100 bg-teal-50/30 rounded-2xl flex items-center justify-between gap-4">
+                    <div>
+                      <h3 className="font-bold text-slate-800">Submission #{sub.id.substring(0, 6).toUpperCase()}</h3>
+                      <p className="text-xs text-slate-500 mt-1">Claimed by you</p>
+                    </div>
+                    {/* 🎯 ඊළඟට අපි මේ බටන් එක අර Marking Canvas එකට ලින්ක් කරනවා */}
+                    <Link 
+                      href={`/teacher-dashboard?id=${sub.id}`} 
+                      className="px-4 py-2 bg-teal-600 text-white text-sm font-bold rounded-xl hover:bg-teal-700 transition shadow-md"
+                    >
+                      Start Grading
+                    </Link>
+                  </div>
                 ))}
               </div>
-            </div>
+            )}
           </section>
 
-          <aside
-            className="rounded-2xl border border-slate-200/90 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900/70"
-            aria-label="Pins and voice notes"
-          >
-            <div className="border-b border-slate-100 px-4 py-3 dark:border-slate-800">
-              <div className="flex items-center gap-2">
-                <MapPin className="size-4 text-red-600 dark:text-red-400" aria-hidden />
-                <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-                  Pin list & voice notes
-                </h2>
-              </div>
-              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                Record per pin. Audio uploads when you stop.
-              </p>
-            </div>
+          {/* My Marked Papers (බලලා ඉවර ඒවා) */}
+          <section className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/60 p-6 shadow-xl">
+            <h2 className="font-bold text-lg mb-6 flex items-center gap-2 text-slate-800 dark:text-slate-100 border-b pb-4">
+              <CheckCircle2 size={20} className="text-emerald-500"/> Recently Graded By Me
+            </h2>
 
-            <div className="max-h-[min(70vh,560px)] overflow-y-auto p-3 sm:p-4">
-              {pins.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/80 px-4 py-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-400">
-                  No pins yet. Click the paper image to add your first marker.
+            {isLoading ? (
+              <div className="flex justify-center py-8"><Loader2 className="animate-spin text-emerald-500" /></div>
+            ) : myMarkedPapers.length === 0 ? (
+              <p className="text-center py-8 text-slate-400 text-sm">No completed grades yet.</p>
+            ) : (
+              <div className="space-y-4">
+                {myMarkedPapers.map((sub) => (
+                  <div key={sub.id} className="p-4 border rounded-2xl flex items-center justify-between bg-slate-50">
+                    <div>
+                      <h3 className="font-bold text-slate-700">Submission #{sub.id.substring(0, 6).toUpperCase()}</h3>
+                      <p className="text-xs text-slate-500">Graded on {new Date(sub.created_at).toLocaleDateString()}</p>
+                    </div>
+                    <span className="font-black text-lg text-emerald-600">{sub.total_mark} / 100</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+
+        {/* 🎯 දකුණු පැත්ත: පොදු ගොඩ (Available Pool) */}
+        <aside className="h-fit">
+          <div className="bg-slate-900 rounded-3xl p-6 shadow-xl text-white">
+            <h2 className="font-bold text-lg mb-2 flex items-center gap-2">
+              <Inbox size={20} className="text-amber-400" /> Available Pool
+            </h2>
+            <p className="text-slate-400 text-xs mb-6">New submissions waiting for a teacher to claim.</p>
+            
+            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
+              {isLoading ? (
+                <div className="flex justify-center py-8"><Loader2 className="animate-spin text-amber-400" /></div>
+              ) : availablePapers.length === 0 ? (
+                <div className="text-center py-10 bg-slate-800/50 rounded-2xl border border-dashed border-slate-700">
+                  <p className="text-slate-400 text-sm">Inbox is zero! 🎉<br/>No pending papers.</p>
                 </div>
               ) : (
-                <ul className="space-y-3">
-                  {pins.map((pin, i) => {
-                    const upload = uploadByPinId[pin.id];
-                    const isRecording = recordingPinId === pin.id;
-                    return (
-                      <li
-                        key={pin.id}
-                        className="rounded-xl border border-slate-200/90 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-800/40"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-red-600 text-xs font-bold text-white shadow-sm">
-                              {i + 1}
-                            </span>
-                            <div className="min-w-0">
-                              <p className="text-sm font-medium text-slate-900 dark:text-white">
-                                Pin {i + 1}
-                              </p>
-                              <p className="text-xs tabular-nums text-slate-500 dark:text-slate-400">
-                                {pin.percentX.toFixed(1)}% · {pin.percentY.toFixed(1)}%
-                              </p>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => removePin(pin.id)}
-                            className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-slate-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/50 dark:hover:text-red-400"
-                            aria-label={`Remove pin ${i + 1}`}
-                          >
-                            <Trash2 className="size-4" aria-hidden />
-                          </button>
-                        </div>
+                availablePapers.map((sub) => (
+                  <div key={sub.id} className="p-4 bg-slate-800 rounded-2xl border border-slate-700 transition hover:border-slate-600">
+                    <div className="flex justify-between items-start mb-4">
+                      <div>
+                        <h3 className="font-bold text-sm text-slate-200">Paper #{sub.id.substring(0, 6).toUpperCase()}</h3>
+                        <p className="text-[10px] text-slate-400 mt-1 flex items-center gap-1">
+                          <Clock size={10}/> {new Date(sub.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <span className="px-2 py-1 bg-amber-500/20 text-amber-400 text-[10px] font-bold rounded-md">New</span>
+                    </div>
 
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          {!isRecording ? (
-                            <button
-                              type="button"
-                              onClick={() => void startRecording(pin.id)}
-                              disabled={
-                                upload?.status === "uploading" ||
-                                (!!recordingPinId && recordingPinId !== pin.id)
-                              }
-                              className="inline-flex h-9 items-center gap-2 rounded-lg bg-teal-600 px-3 text-xs font-medium text-white shadow-sm transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-teal-500 dark:hover:bg-teal-400"
-                            >
-                              <Mic className="size-3.5" aria-hidden />
-                              Record voice note
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={stopRecording}
-                              className="inline-flex h-9 items-center gap-2 rounded-lg bg-red-600 px-3 text-xs font-medium text-white shadow-sm transition hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-400"
-                            >
-                              <Square className="size-3.5 fill-current" aria-hidden />
-                              Stop & upload
-                            </button>
-                          )}
-
-                          {upload?.status === "uploading" && (
-                            <span className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
-                              <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                              Uploading…
-                            </span>
-                          )}
-                          {upload?.status === "done" && (
-                            <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 dark:text-emerald-400">
-                              <CheckCircle2 className="size-3.5 shrink-0" aria-hidden />
-                              Saved to Database!
-                            </span>
-                          )}
-                          {upload?.status === "error" && (
-                            <span className="text-xs text-red-600 dark:text-red-400" title={upload.message}>
-                              Upload failed
-                            </span>
-                          )}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
+                    <button 
+                      onClick={() => handleClaimPaper(sub.id)}
+                      disabled={claimingId === sub.id}
+                      className="w-full py-3 bg-white text-slate-900 text-xs font-black uppercase tracking-widest rounded-xl hover:bg-teal-400 transition flex items-center justify-center gap-2 disabled:opacity-50"
+                    >
+                      {claimingId === sub.id ? <Loader2 size={14} className="animate-spin"/> : <Hand size={14}/>}
+                      Claim to Grade
+                    </button>
+                  </div>
+                ))
               )}
             </div>
-          </aside>
-        </div>
+          </div>
+        </aside>
+
       </main>
     </div>
   );

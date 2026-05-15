@@ -1,126 +1,36 @@
-"use client";
+import Link from "next/link";
+import { GraduationCap, ArrowRight, CheckCircle, ShieldCheck } from "lucide-react";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import type { Session } from "@supabase/supabase-js";
-import { supabase } from "@/lib/supabaseClient";
+export default function LandingPage() {
+  return (
+    <div className="min-h-screen bg-white">
+      <main className="max-w-6xl mx-auto px-6 py-20 flex flex-col items-center text-center">
+        <div className="size-20 bg-indigo-600 rounded-3xl flex items-center justify-center text-white mb-8 shadow-2xl shadow-indigo-200">
+          <GraduationCap size={40} strokeWidth={2.5} />
+        </div>
+        <h1 className="text-5xl md:text-7xl font-black tracking-tighter text-slate-900 mb-6">
+          Next-Gen <span className="text-indigo-600">Exam Grading</span> Portal
+        </h1>
+        <p className="text-xl text-slate-500 max-w-2xl mb-12 font-medium">
+          Upload your answers, get real-time voice feedback, and track your A/L progress like never before.
+        </p>
 
-const ADMIN_EMAIL = "ayeshakalhari98@gmail.com";
-const TEACHER_EMAIL = "thilinasuranga568@gmail.com";
+        <div className="grid md:grid-cols-2 gap-6 w-full max-w-2xl">
+          <Link href="/student-dashboard" className="group p-8 border-2 border-slate-100 rounded-[40px] hover:border-indigo-600 transition-all text-left">
+            <CheckCircle className="text-indigo-600 mb-4" size={32} />
+            <h3 className="text-2xl font-black text-slate-800 mb-2">Student Portal</h3>
+            <p className="text-slate-500 text-sm mb-6">Submit papers and view teacher feedback.</p>
+            <span className="flex items-center gap-2 font-bold text-indigo-600 group-hover:gap-4 transition-all">Enter Dashboard <ArrowRight size={18}/></span>
+          </Link>
 
-function sessionUserEmail(session: Session): string | null {
-  const meta = session.user.user_metadata;
-  const fromMeta =
-    meta && typeof meta.email === "string" ? meta.email : null;
-  return session.user.email ?? fromMeta;
-}
-
-function resolveDashboardPath(email: string | null | undefined): string {
-  const normalized = email?.trim().toLowerCase() ?? "";
-  if (normalized === ADMIN_EMAIL) return "/admin";
-  if (normalized === TEACHER_EMAIL) return "/teacher-dashboard";
-  return "/dashboard";
-}
-
-export default function Home() {
-  const router = useRouter();
-  const [sessionChecked, setSessionChecked] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    const routeAuthenticatedUser = (session: Session | null): boolean => {
-      if (!session) return false;
-      router.replace(resolveDashboardPath(sessionUserEmail(session)));
-      return true;
-    };
-
-    const checkSession = async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (cancelled) return;
-
-      if (routeAuthenticatedUser(session)) {
-        return;
-      }
-
-      setSessionChecked(true);
-    };
-
-    void checkSession();
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (cancelled) return;
-      if (routeAuthenticatedUser(session)) {
-        return;
-      }
-      setSessionChecked(true);
-    });
-
-    return () => {
-      cancelled = true;
-      subscription.unsubscribe();
-    };
-  }, [router]);
-
-  const signInWithGoogle = async () => {
-    setIsLoading(true);
-
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        // ඔන්න මෙතන තමයි මැජික් එක! දැන් ඔයා ඉන්න තැනටම (Localhost ද, Live ද කියලා) Redirect වෙනවා.
-        redirectTo: `${window.location.origin}/`,
-      },
-    });
-
-    if (error) {
-      console.error("Google sign-in failed:", error.message);
-      setIsLoading(false);
-    }
-  };
-
-  if (!sessionChecked) {
-    return (
-      <main className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-slate-100 px-6 py-10 text-slate-900 dark:from-slate-950 dark:via-slate-950 dark:to-black dark:text-slate-100">
-        <div className="mx-auto flex min-h-[calc(100vh-5rem)] w-full max-w-md items-center justify-center">
-          <p className="text-sm text-slate-600 dark:text-slate-400">
-            Checking your session…
-          </p>
+          <Link href="/teacher" className="group p-8 border-2 border-slate-100 rounded-[40px] hover:border-teal-600 transition-all text-left">
+            <ShieldCheck className="text-teal-600 mb-4" size={32} />
+            <h3 className="text-2xl font-black text-slate-800 mb-2">Teacher Portal</h3>
+            <p className="text-slate-500 text-sm mb-6">Claim submissions and record feedback.</p>
+            <span className="flex items-center gap-2 font-bold text-teal-600 group-hover:gap-4 transition-all">Grade Papers <ArrowRight size={18}/></span>
+          </Link>
         </div>
       </main>
-    );
-  }
-
-  return (
-    <main className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-slate-100 px-6 py-10 text-slate-900 dark:from-slate-950 dark:via-slate-950 dark:to-black dark:text-slate-100">
-      <div className="mx-auto flex min-h-[calc(100vh-5rem)] w-full max-w-md items-center justify-center">
-        <section className="w-full rounded-2xl border border-slate-200/80 bg-white/90 p-8 shadow-lg shadow-slate-200/60 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/80 dark:shadow-black/30">
-          <h1 className="text-center text-3xl font-semibold tracking-tight">
-            A/L Exam Portal
-          </h1>
-          <p className="mt-3 text-center text-sm leading-6 text-slate-600 dark:text-slate-300">
-            Access your exam dashboard securely using your Google account.
-          </p>
-
-          <button
-            type="button"
-            onClick={signInWithGoogle}
-            disabled={isLoading}
-            className="mt-8 flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-slate-300 bg-white text-sm font-medium text-slate-800 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:cursor-not-allowed disabled:opacity-70 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
-          >
-            <span
-              className="inline-block h-5 w-5 rounded-full bg-[conic-gradient(from_45deg,_#4285f4_0_25%,_#34a853_25%_50%,_#fbbc05_50%_75%,_#ea4335_75%_100%)]"
-              aria-hidden="true"
-            />
-            {isLoading ? "Redirecting..." : "Sign in with Google"}
-          </button>
-        </section>
-      </div>
-    </main>
+    </div>
   );
 }
