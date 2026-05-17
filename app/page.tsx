@@ -18,13 +18,33 @@ export default function LandingPage() {
   const [initialLoading, setInitialLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    const checkAndSyncUser = async (session: any) => {
+      if (session?.user) {
+        // ළමයා ලොග් වුණාම, එයාගේ ඊමේල් එක user_roles ටේබල් එකේ තියෙනවද බලනවා
+        const { data: existingRole } = await supabase
+          .from('user_roles')
+          .select('*')
+          .eq('email', session.user.email)
+          .single();
+
+        // ඊමේල් එක තියෙනවා නම්, ඒත් තාම user_id එක හිස් නම්, ඒක අප්ඩේට් කරනවා
+        if (existingRole && !existingRole.user_id) {
+          await supabase
+            .from('user_roles')
+            .update({ user_id: session.user.id })
+            .eq('id', existingRole.id);
+        }
+      }
       setSession(session);
       setInitialLoading(false);
+    };
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      checkAndSyncUser(session);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
+      checkAndSyncUser(session);
     });
 
     return () => subscription.unsubscribe();
