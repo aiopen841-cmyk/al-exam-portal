@@ -29,12 +29,12 @@ type Submission = {
   created_at: string;
   status: string;
   total_mark: number | null;
-  papers?: { title: string }; // 🎯 පේපර් එකේ නම අදින්න
+  papers?: { title: string }; 
 };
 
 export default function StudentDashboard() {
   const router = useRouter();
-  const [authReady, setAuthReady] = useState(false);
+  const [isCheckingAccess, setIsCheckingAccess] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   
@@ -50,35 +50,50 @@ export default function StudentDashboard() {
 
   useEffect(() => {
     let cancelled = false;
-    const run = async () => {
+    const checkAccess = async () => {
       const { data: { session } } = await supabase.auth.getSession();
+      
       if (cancelled) return;
-      if (!session?.user?.id) {
+
+      if (!session) {
         router.replace("/");
         return;
       }
+
+      // 🔐 Role Check: Student ද කියලා බලනවා
+      const { data: roleData } = await supabase
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', session.user.id)
+        .single();
+
+      if (!roleData || roleData.role !== 'student') {
+        alert("🛑 Access Denied! Students Only.");
+        router.replace("/");
+        return;
+      }
+
       setUserId(session.user.id);
       setUserEmail(session.user.email || "unknown@student.com");
-      setAuthReady(true);
+      setIsCheckingAccess(false);
       
       await fetchSubmissions(session.user.id);
       await fetchPapers();
     };
-    void run();
+
+    void checkAccess();
     return () => { cancelled = true; };
   }, [router]);
 
-  // 🎯 Database එකෙන් පේපර්ස් ලිස්ට් එක ගන්නවා
   const fetchPapers = async () => {
-    const { data, error } = await supabase.from('papers').select('*').order('id', { ascending: false });
+    const { data } = await supabase.from('papers').select('*').order('id', { ascending: false });
     if (data) setAvailablePapers(data);
   };
 
   const fetchSubmissions = async (studentId: string) => {
     setIsLoading(true);
     try {
-      // 🎯 submissions ටේබල් එකයි papers ටේබල් එකයි Join කරලා පේපර් එකේ නමත් අරන් එනවා
-      const { data, error } = await supabase
+      const { data } = await supabase
         .from('submissions')
         .select('id, created_at, status, total_mark, papers(title)')
         .eq('student_id', studentId)
@@ -121,7 +136,7 @@ export default function StudentDashboard() {
         .insert({
           id: submissionId,
           student_id: userId,
-          paper_id: parseInt(selectedPaperId), // 🎯 තෝරපු පේපර් එකේ ID එක යවනවා
+          paper_id: parseInt(selectedPaperId), 
           status: 'Pending',
           total_mark: null
         });
@@ -147,10 +162,16 @@ export default function StudentDashboard() {
     router.push('/');
   };
 
-  if (!authReady) return <div className="p-10 text-center font-bold text-indigo-600">Loading Student Dashboard...</div>;
+  if (isCheckingAccess) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950">
+        <Loader2 className="animate-spin text-indigo-600" size={40} />
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 animate-in fade-in duration-500">
       <header className="sticky top-0 z-30 border-b bg-white/80 backdrop-blur-md p-4 flex items-center justify-between shadow-sm">
         <h1 className="text-xl font-black tracking-tight text-indigo-900 dark:text-indigo-100 flex items-center gap-2">
           <Award className="text-indigo-600" /> Student Dashboard
@@ -162,7 +183,6 @@ export default function StudentDashboard() {
 
       <main className="max-w-5xl mx-auto p-6 grid md:grid-cols-[1fr_2fr] gap-8 mt-6">
         
-        {/* වම් පැත්ත: Upload Trigger Button */}
         <aside className="h-fit">
           <div className="bg-gradient-to-br from-indigo-600 to-violet-700 rounded-3xl p-8 shadow-xl shadow-indigo-600/20 text-white text-center">
             <h2 className="font-bold text-2xl mb-2">New Exam?</h2>
@@ -177,7 +197,6 @@ export default function StudentDashboard() {
           </div>
         </aside>
 
-        {/* දකුණු පැත්ත: Submissions List */}
         <section className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/60 p-6 shadow-xl">
           <h2 className="font-bold text-lg mb-6 flex items-center gap-2 text-slate-800 dark:text-slate-100 border-b pb-4">
             <FileText size={20} className="text-indigo-500"/> My Submissions
@@ -198,7 +217,6 @@ export default function StudentDashboard() {
                 <div key={sub.id} className="p-5 border rounded-2xl bg-slate-50 dark:bg-slate-800/40 border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition hover:shadow-md">
                   
                   <div>
-                    {/* 🎯 දැන් පේන්නේ අදාළ පේපර් එකේ නමයි! */}
                     <h3 className="font-bold text-slate-700 dark:text-slate-200">
                       {sub.papers?.title || `Exam Paper`}
                     </h3>
@@ -234,7 +252,6 @@ export default function StudentDashboard() {
         </section>
       </main>
 
-      {/* 🎯 Upload Modal (Pop-up Box) එක */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in">
           <div className="bg-white dark:bg-slate-900 rounded-3xl w-full max-w-md shadow-2xl overflow-hidden border border-slate-100 dark:border-slate-800">
@@ -248,7 +265,6 @@ export default function StudentDashboard() {
             </div>
             
             <div className="p-6 space-y-6">
-              {/* Dropdown එක */}
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">1. Select Exam Paper</label>
                 <select 
@@ -264,7 +280,6 @@ export default function StudentDashboard() {
                 </select>
               </div>
 
-              {/* File Picker එක */}
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">2. Attach Answer Script</label>
                 <input 
