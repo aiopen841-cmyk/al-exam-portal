@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { 
   ShieldCheck, 
   Plus, 
@@ -21,8 +22,10 @@ type Paper = {
 };
 
 export default function AdminDashboard() {
+  const router = useRouter();
   const [papers, setPapers] = useState<Paper[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isCheckingAccess, setIsCheckingAccess] = useState(true);
   
   // New Paper Form States
   const [title, setTitle] = useState("");
@@ -31,8 +34,36 @@ export default function AdminDashboard() {
   const [isAdding, setIsAdding] = useState(false);
 
   useEffect(() => {
-    fetchPapers();
-  }, []);
+    const checkAccess = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      // 1. ලොග් වෙලා නැත්නම් එලවනවා
+      if (!session) {
+        router.push("/");
+        return;
+      }
+
+      // 2. Database එකෙන් බලනවා මෙයා Admin ද කියලා
+      const { data: roleData } = await supabase
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', session.user.id)
+        .single();
+
+      // 3. Admin නෙමෙයි නම් (හෝ ටේබල් එකේ නැත්නම්) එලවනවා
+      if (!roleData || roleData.role !== 'admin') {
+        alert("🛑 Access Denied! Admins Only.");
+        router.push("/");
+        return;
+      }
+
+      // 4. Admin නම් විතරක් Papers ටික Load කරනවා
+      setIsCheckingAccess(false);
+      fetchPapers();
+    };
+
+    checkAccess();
+  }, [router]);
 
   const fetchPapers = async () => {
     setIsLoading(true);
@@ -70,8 +101,17 @@ export default function AdminDashboard() {
     await fetchPapers();
   };
 
+  // Security Check එක ඉවර වෙනකම් ලස්සන Loading එකක් පෙන්නනවා
+  if (isCheckingAccess) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950">
+        <Loader2 className="animate-spin text-indigo-600" size={40} />
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 p-6">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 p-6 animate-in fade-in duration-500">
       <header className="max-w-6xl mx-auto mb-10 flex items-center justify-between">
         <h1 className="text-3xl font-black tracking-tighter text-slate-900 dark:text-white flex items-center gap-3">
           <ShieldCheck className="text-indigo-600" size={36} /> Admin Panel
