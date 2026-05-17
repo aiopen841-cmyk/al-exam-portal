@@ -12,35 +12,16 @@ import {
   UserPlus,
   GraduationCap,
   Search,
-  Link as LinkIcon
+  Link as LinkIcon,
+  FileSpreadsheet
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
+import Papa from "papaparse"; // 🎯 CSV කියවන්න
 
-type Course = {
-  id: number;
-  name: string;
-  description: string;
-};
-
-type Paper = {
-  id: number;
-  title: string;
-  subject: string;
-  month_year: string;
-  course_id: number; 
-};
-
-type UserRole = {
-  id: number;
-  email: string;
-  role: string;
-};
-
-type Enrollment = {
-  id: number;
-  student_email: string;
-  course_id: number;
-};
+type Course = { id: number; name: string; description: string; };
+type Paper = { id: number; title: string; subject: string; month_year: string; course_id: number; };
+type UserRole = { id: number; email: string; role: string; };
+type Enrollment = { id: number; student_email: string; course_id: number; };
 
 export default function AdminDashboard() {
   const router = useRouter();
@@ -52,7 +33,7 @@ export default function AdminDashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [isCheckingAccess, setIsCheckingAccess] = useState(true);
   
-  // States
+  // Forms States
   const [courseName, setCourseName] = useState("");
   const [courseDesc, setCourseDesc] = useState("");
   const [isAddingCourse, setIsAddingCourse] = useState(false);
@@ -68,10 +49,14 @@ export default function AdminDashboard() {
   const [isAddingUser, setIsAddingUser] = useState(false);
   const [searchUser, setSearchUser] = useState("");
 
-  // 🎯 Enrollment States
   const [enrollEmail, setEnrollEmail] = useState("");
   const [enrollCourseId, setEnrollCourseId] = useState("");
   const [isEnrolling, setIsEnrolling] = useState(false);
+
+  // 🎯 Z-Score CSV Upload States
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [isUploadingCSV, setIsUploadingCSV] = useState(false);
+  const [totalZRecords, setTotalZRecords] = useState(0);
 
   useEffect(() => {
     const checkAccess = async () => {
@@ -104,7 +89,51 @@ export default function AdminDashboard() {
     const { data: eData } = await supabase.from('enrollments').select('*').order('created_at', { ascending: false });
     if (eData) setEnrollments(eData);
 
+    // 🎯 Z-Score Data ගණන සිංක් කරනවා
+    const { count } = await supabase.from('z_score_data').select('*', { count: 'exact', head: true });
+    setTotalZRecords(count || 0);
+
     setIsLoading(false);
+  };
+
+  // 🎯 Z-Score CSV Upload Logic
+  const handleCSVUpload = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!csvFile) return;
+
+    setIsUploadingCSV(true);
+
+    Papa.parse(csvFile, {
+      header: true,
+      skipEmptyLines: true,
+      complete: async (results) => {
+        try {
+          const formattedData = results.data.map((row: any) => ({
+            year: parseInt(row.year),
+            stream: row.stream,
+            district: row.district,
+            sub1_mark: parseInt(row.sub1_mark),
+            sub2_mark: parseInt(row.sub2_mark),
+            sub3_mark: parseInt(row.sub3_mark),
+            z_score: parseFloat(row.z_score),
+            island_rank: parseInt(row.island_rank),
+            district_rank: parseInt(row.district_rank),
+          }));
+
+          const { error } = await supabase.from('z_score_data').insert(formattedData);
+
+          if (error) throw error;
+
+          alert(`🎉 Successfully uploaded ${formattedData.length} Z-Score records!`);
+          setCsvFile(null);
+          fetchData();
+        } catch (err: any) {
+          alert("❌ CSV Upload Error: " + err.message);
+        } finally {
+          setIsUploadingCSV(false);
+        }
+      }
+    });
   };
 
   // --- Course Logic ---
@@ -122,31 +151,23 @@ export default function AdminDashboard() {
   };
 
   const deleteCourse = async (id: number) => {
-    if (!confirm("Are you sure you want to delete this course?")) return;
+    if (!confirm("Are you sure?")) return;
     await supabase.from('courses').delete().eq('id', id);
     fetchData();
   };
 
-  // --- Enrollment Logic 🎯 ---
+  // --- Enrollment Logic ---
   const handleEnroll = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!enrollEmail || !enrollCourseId) return;
     setIsEnrolling(true);
     try {
-      // Check if already enrolled
       const exists = enrollments.find(en => en.student_email === enrollEmail && en.course_id === parseInt(enrollCourseId));
-      if (exists) {
-        alert("⚠️ This student is already enrolled in this course!");
-        setIsEnrolling(false);
-        return;
-      }
+      if (exists) { alert("⚠️ Already enrolled!"); setIsEnrolling(false); return; }
 
-      const { error } = await supabase.from('enrollments').insert({ 
-        student_email: enrollEmail, 
-        course_id: parseInt(enrollCourseId) 
-      });
+      const { error } = await supabase.from('enrollments').insert({ student_email: enrollEmail, course_id: parseInt(enrollCourseId) });
       if (error) throw error;
-      alert("✅ Student Enrolled Successfully!");
+      alert("✅ Enrolled!");
       setEnrollEmail(""); setEnrollCourseId("");
       fetchData();
     } catch (err: any) { alert("❌ Error: " + err.message); } 
@@ -154,7 +175,7 @@ export default function AdminDashboard() {
   };
 
   const deleteEnrollment = async (id: number) => {
-    if (!confirm("Remove student from this course?")) return;
+    if (!confirm("Remove student?")) return;
     await supabase.from('enrollments').delete().eq('id', id);
     fetchData();
   };
@@ -164,11 +185,9 @@ export default function AdminDashboard() {
     e.preventDefault();
     setIsAddingPaper(true);
     try {
-      const { error } = await supabase.from('papers').insert({ 
-        title, subject, month_year: monthYear, course_id: parseInt(selectedCourseId) 
-      });
+      const { error } = await supabase.from('papers').insert({ title, subject, month_year: monthYear, course_id: parseInt(selectedCourseId) });
       if (error) throw error;
-      alert("✅ New Paper Added!");
+      alert("✅ Paper Added!");
       setTitle(""); setSubject(""); setMonthYear(""); setSelectedCourseId("");
       fetchData();
     } catch (err: any) { alert("❌ Error: " + err.message); } 
@@ -176,7 +195,7 @@ export default function AdminDashboard() {
   };
 
   const deletePaper = async (id: number) => {
-    if (!confirm("Delete this paper?")) return;
+    if (!confirm("Delete paper?")) return;
     await supabase.from('papers').delete().eq('id', id);
     fetchData();
   };
@@ -202,8 +221,7 @@ export default function AdminDashboard() {
   };
 
   const filteredUsers = userRoles.filter(user => 
-    user.email.toLowerCase().includes(searchUser.toLowerCase()) || 
-    user.role.toLowerCase().includes(searchUser.toLowerCase())
+    user.email.toLowerCase().includes(searchUser.toLowerCase()) || user.role.toLowerCase().includes(searchUser.toLowerCase())
   );
   
   const studentList = userRoles.filter(u => u.role === 'student');
@@ -222,147 +240,105 @@ export default function AdminDashboard() {
         
         <div className="space-y-12">
           
+          {/* 🎯 Z-Score Data CSV Upload Section */}
+          <section className="bg-white dark:bg-slate-900 rounded-[32px] p-8 border border-slate-100 shadow-xl border-t-8 border-t-purple-600">
+            <h2 className="text-xl font-black mb-2 flex items-center gap-2 text-purple-600">
+                <FileSpreadsheet /> Upload Z-Score Ranking Data
+            </h2>
+            <p className="text-slate-400 text-xs mb-6">Upload a CSV file with columns: year, stream, district, sub1_mark, sub2_mark, sub3_mark, z_score, island_rank, district_rank</p>
+            
+            <form onSubmit={handleCSVUpload} className="flex flex-col sm:flex-row gap-4 p-6 bg-purple-50/50 rounded-2xl border-2 border-dashed border-purple-200">
+              <input 
+                type="file" 
+                accept=".csv"
+                onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
+                className="text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-purple-100 file:text-purple-700 hover:file:bg-purple-200 transition w-full"
+                required
+              />
+              <button type="submit" disabled={isUploadingCSV || !csvFile} className="py-3 px-6 bg-purple-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-purple-700 transition disabled:opacity-50 shrink-0">
+                {isUploadingCSV ? <><Loader2 className="animate-spin"/> Parsing...</> : "Upload & Sync"}
+              </button>
+            </form>
+          </section>
+
           {/* 🎯 Course Management */}
           <section className="bg-white dark:bg-slate-900 rounded-[32px] p-8 border border-slate-100 shadow-xl border-t-8 border-t-indigo-600">
-            <h2 className="text-xl font-black mb-6 flex items-center gap-2 text-indigo-600">
-                <GraduationCap /> Manage Courses
-            </h2>
+            <h2 className="text-xl font-black mb-6 flex items-center gap-2 text-indigo-600"><GraduationCap /> Manage Courses</h2>
             <form onSubmit={handleAddCourse} className="grid md:grid-cols-3 gap-4 mb-8 p-6 bg-indigo-50/50 rounded-2xl border-2 border-dashed border-indigo-200">
-              <input placeholder="Course Name (e.g. Physics 2026)" value={courseName} onChange={e => setCourseName(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-indigo-500 text-sm" required />
+              <input placeholder="Course Name" value={courseName} onChange={e => setCourseName(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-indigo-500 text-sm" required />
               <input placeholder="Short Description" value={courseDesc} onChange={e => setCourseDesc(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-indigo-500 text-sm" />
-              <button type="submit" disabled={isAddingCourse} className="py-3 bg-indigo-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-700 transition">
-                {isAddingCourse ? <Loader2 className="animate-spin"/> : <Plus size={20}/>} Create Course
-              </button>
+              <button type="submit" disabled={isAddingCourse} className="py-3 bg-indigo-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-700 transition">{isAddingCourse ? <Loader2 className="animate-spin"/> : <Plus size={20}/>} Create Course</button>
             </form>
             <div className="grid md:grid-cols-2 gap-4">
               {courses.map(course => (
                 <div key={course.id} className="p-5 border-2 border-slate-100 rounded-2xl flex items-center justify-between hover:border-indigo-200 transition bg-white shadow-sm">
-                  <div>
-                    <h4 className="font-bold text-slate-800">{course.name}</h4>
-                    <p className="text-xs text-slate-500 mt-1">{course.description || "No description"}</p>
-                  </div>
-                  <button onClick={() => deleteCourse(course.id)} className="p-3 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-xl transition shadow-sm flex items-center gap-2 text-xs font-bold">
-                    <Trash2 size={16} /> Delete
-                  </button>
+                  <div><h4 className="font-bold text-slate-800">{course.name}</h4><p className="text-xs text-slate-500 mt-1">{course.description || "No description"}</p></div>
+                  <button onClick={() => deleteCourse(course.id)} className="p-3 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-xl transition shadow-sm text-xs font-bold flex items-center gap-2"><Trash2 size={16} /> Delete</button>
                 </div>
               ))}
             </div>
           </section>
 
-          {/* 🎯 Enrollments Management (New) */}
+          {/* 🎯 Enrollments Management */}
           <section className="bg-white dark:bg-slate-900 rounded-[32px] p-8 border border-slate-100 shadow-xl border-t-8 border-t-blue-600">
-            <h2 className="text-xl font-black mb-6 flex items-center gap-2 text-blue-600">
-                <LinkIcon /> Enroll Students to Courses
-            </h2>
+            <h2 className="text-xl font-black mb-6 flex items-center gap-2 text-blue-600"><LinkIcon /> Enroll Students to Courses</h2>
             <form onSubmit={handleEnroll} className="grid md:grid-cols-3 gap-4 mb-8 p-6 bg-blue-50/50 rounded-2xl border-2 border-dashed border-blue-200">
-              
               <select value={enrollEmail} onChange={e => setEnrollEmail(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-blue-500 text-sm font-bold text-slate-700" required>
                 <option value="" disabled>-- Select Student --</option>
                 {studentList.map(s => <option key={s.id} value={s.email}>{s.email}</option>)}
               </select>
-
               <select value={enrollCourseId} onChange={e => setEnrollCourseId(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-blue-500 text-sm font-bold text-slate-700" required>
                 <option value="" disabled>-- Select Course --</option>
                 {courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
-
-              <button type="submit" disabled={isEnrolling || courses.length === 0 || studentList.length === 0} className="py-3 bg-blue-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-blue-700 transition disabled:opacity-50">
-                {isEnrolling ? <Loader2 className="animate-spin"/> : <Plus size={20}/>} Enroll Student
-              </button>
+              <button type="submit" disabled={isEnrolling || courses.length === 0 || studentList.length === 0} className="py-3 bg-blue-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-blue-700 transition disabled:opacity-50">{isEnrolling ? <Loader2 className="animate-spin"/> : <Plus size={20}/>} Enroll Student</button>
             </form>
-
             <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
-              {enrollments.length === 0 ? (
-                <div className="text-center py-8 text-slate-400 text-sm">No enrollments yet.</div>
-              ) : (
-                enrollments.map(en => {
-                  const courseName = courses.find(c => c.id === en.course_id)?.name || "Unknown Course";
-                  return (
-                    <div key={en.id} className="flex items-center justify-between p-3 border rounded-xl text-sm hover:bg-slate-50 transition">
-                      <div>
-                        <h4 className="font-bold text-slate-700">{en.student_email}</h4>
-                        <p className="text-[10px] text-blue-600 font-bold mt-1 uppercase tracking-widest">{courseName}</p>
-                      </div>
-                      <button onClick={() => deleteEnrollment(en.id)} className="p-2 bg-slate-100 text-slate-400 hover:bg-red-100 hover:text-red-600 rounded-lg transition"><Trash2 size={16} /></button>
-                    </div>
-                  );
-                })
-              )}
+              {enrollments.map(en => (
+                <div key={en.id} className="flex items-center justify-between p-3 border rounded-xl text-sm hover:bg-slate-50 transition">
+                  <div><h4 className="font-bold text-slate-700">{en.student_email}</h4><p className="text-[10px] text-blue-600 font-bold mt-1 uppercase tracking-widest">{courses.find(c => c.id === en.course_id)?.name || "Unknown Course"}</p></div>
+                  <button onClick={() => deleteEnrollment(en.id)} className="p-2 bg-slate-100 text-slate-400 hover:bg-red-100 hover:text-red-600 rounded-lg transition"><Trash2 size={16} /></button>
+                </div>
+              ))}
             </div>
           </section>
 
           {/* 🎯 User Management */}
           <section className="bg-white dark:bg-slate-900 rounded-[32px] p-8 border border-slate-100 shadow-xl border-t-8 border-t-emerald-600">
-            <h2 className="text-xl font-black mb-6 flex items-center gap-2 text-emerald-600">
-                <UserPlus /> Manage Users & Access
-            </h2>
+            <h2 className="text-xl font-black mb-6 flex items-center gap-2 text-emerald-600"><UserPlus /> Manage Users & Access</h2>
             <form onSubmit={handleAddUser} className="grid md:grid-cols-4 gap-4 mb-8 p-6 bg-emerald-50/50 rounded-2xl border-2 border-dashed border-emerald-200">
               <input type="email" placeholder="Gmail Address" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} className="md:col-span-2 p-3 rounded-xl border-2 outline-none focus:border-emerald-500 text-sm" required />
-              <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-emerald-500 text-sm font-bold">
-                <option value="student">Student</option>
-                <option value="teacher">Teacher</option>
-                <option value="admin">Admin</option>
-              </select>
-              <button type="submit" disabled={isAddingUser} className="py-3 bg-emerald-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-emerald-700 transition">
-                {isAddingUser ? <Loader2 className="animate-spin"/> : <Plus size={20}/>} Grant Access
-              </button>
+              <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-emerald-500 text-sm font-bold"><option value="student">Student</option><option value="teacher">Teacher</option><option value="admin">Admin</option></select>
+              <button type="submit" disabled={isAddingUser} className="py-3 bg-emerald-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-emerald-700 transition">{isAddingUser ? <Loader2 className="animate-spin"/> : <Plus size={20}/>} Grant Access</button>
             </form>
-
-            <div className="mb-6 relative">
-              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none"><Search size={18} className="text-slate-400" /></div>
-              <input type="text" placeholder="Search by email or role..." value={searchUser} onChange={(e) => setSearchUser(e.target.value)} className="w-full pl-12 pr-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl outline-none focus:border-emerald-500 transition text-sm text-slate-700" />
-            </div>
-
+            <div className="mb-6 relative"><div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none"><Search size={18} className="text-slate-400" /></div><input type="text" placeholder="Search by email or role..." value={searchUser} onChange={(e) => setSearchUser(e.target.value)} className="w-full pl-12 pr-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl outline-none focus:border-emerald-500 transition text-sm text-slate-700" /></div>
             <div className="space-y-2 max-h-[350px] overflow-y-auto pr-2">
-              {filteredUsers.length === 0 ? (
-                <div className="text-center py-8 text-slate-400 text-sm">No users found.</div>
-              ) : (
-                filteredUsers.map(user => (
-                  <div key={user.id} className="flex items-center justify-between p-3 border rounded-xl text-sm hover:bg-slate-50 transition">
-                    <div className="flex items-center gap-3">
-                      <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${user.role === 'admin' ? 'bg-rose-100 text-rose-700' : user.role === 'teacher' ? 'bg-teal-100 text-teal-700' : 'bg-indigo-100 text-indigo-700'}`}>{user.role}</span>
-                      <span className="font-medium text-slate-700">{user.email}</span>
-                    </div>
-                    {user.role !== 'admin' && <button onClick={() => deleteUserRole(user.id)} className="p-2 bg-slate-100 text-slate-400 hover:bg-red-100 hover:text-red-600 rounded-lg transition"><Trash2 size={16} /></button>}
-                  </div>
-                ))
-              )}
+              {filteredUsers.map(user => (
+                <div key={user.id} className="flex items-center justify-between p-3 border rounded-xl text-sm hover:bg-slate-50 transition">
+                  <div className="flex items-center gap-3"><span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${user.role === 'admin' ? 'bg-rose-100 text-rose-700' : user.role === 'teacher' ? 'bg-teal-100 text-teal-700' : 'bg-indigo-100 text-indigo-700'}`}>{user.role}</span><span className="font-medium text-slate-700">{user.email}</span></div>
+                  {user.role !== 'admin' && <button onClick={() => deleteUserRole(user.id)} className="p-2 bg-slate-100 text-slate-400 hover:bg-red-100 hover:text-red-600 rounded-lg transition"><Trash2 size={16} /></button>}
+                </div>
+              ))}
             </div>
           </section>
 
           {/* 🎯 Paper Management */}
           <section className="bg-white dark:bg-slate-900 rounded-[32px] p-8 border border-slate-100 shadow-xl border-t-8 border-t-amber-600">
-            <h2 className="text-xl font-black mb-6 flex items-center gap-2 text-amber-600">
-                <BookOpen /> Manage Exam Papers
-            </h2>
+            <h2 className="text-xl font-black mb-6 flex items-center gap-2 text-amber-600"><BookOpen /> Manage Exam Papers</h2>
             <form onSubmit={handleAddPaper} className="grid md:grid-cols-2 gap-4 mb-8 p-6 bg-amber-50/50 rounded-2xl border-2 border-dashed border-amber-200">
-              <input placeholder="Paper Title (e.g. Model Paper 1)" value={title} onChange={e => setTitle(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-amber-500 text-sm" required />
-              <input placeholder="Subject (e.g. Combined Maths)" value={subject} onChange={e => setSubject(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-amber-500 text-sm" required />
-              <input placeholder="Month/Year (e.g. Aug 2026)" value={monthYear} onChange={e => setMonthYear(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-amber-500 text-sm" required />
-              
-              <select value={selectedCourseId} onChange={e => setSelectedCourseId(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-amber-500 text-sm font-bold text-slate-700" required>
-                <option value="" disabled>-- Select Assigned Course --</option>
-                {courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-
-              <button type="submit" disabled={isAddingPaper || courses.length === 0} className="md:col-span-2 py-3 bg-amber-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-amber-700 transition disabled:opacity-50">
-                {isAddingPaper ? <Loader2 className="animate-spin"/> : <Plus size={20}/>} Add New Paper
-              </button>
+              <input placeholder="Paper Title" value={title} onChange={e => setTitle(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-amber-500 text-sm" required />
+              <input placeholder="Subject" value={subject} onChange={e => setSubject(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-amber-500 text-sm" required />
+              <input placeholder="Month/Year" value={monthYear} onChange={e => setMonthYear(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-amber-500 text-sm" required />
+              <select value={selectedCourseId} onChange={e => setSelectedCourseId(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-amber-500 text-sm font-bold text-slate-700" required><option value="" disabled>-- Select Assigned Course --</option>{courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+              <button type="submit" disabled={isAddingPaper || courses.length === 0} className="md:col-span-2 py-3 bg-amber-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-amber-700 transition disabled:opacity-50">{isAddingPaper ? <Loader2 className="animate-spin"/> : <Plus size={20}/>} Add New Paper</button>
             </form>
-
             <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
-              {papers.map(paper => {
-                const courseName = courses.find(c => c.id === paper.course_id)?.name || "Unassigned";
-                return (
-                  <div key={paper.id} className="flex items-center justify-between p-3 border rounded-xl text-sm hover:bg-slate-50 transition">
-                    <div>
-                      <h4 className="font-bold text-slate-700 flex items-center gap-2">{paper.title} <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">{courseName}</span></h4>
-                      <p className="text-[10px] text-slate-400 mt-1">{paper.subject} • {paper.month_year}</p>
-                    </div>
-                    <button onClick={() => deletePaper(paper.id)} className="p-2 bg-slate-100 text-slate-400 hover:bg-red-100 hover:text-red-600 rounded-lg transition"><Trash2 size={16} /></button>
-                  </div>
-                );
-              })}
+              {papers.map(paper => (
+                <div key={paper.id} className="flex items-center justify-between p-3 border rounded-xl text-sm hover:bg-slate-50 transition">
+                  <div><h4 className="font-bold text-slate-700">{paper.title} <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">{courses.find(c => c.id === paper.course_id)?.name || "Unassigned"}</span></h4><p className="text-[10px] text-slate-400 mt-1">{paper.subject} • {paper.month_year}</p></div>
+                  <button onClick={() => deletePaper(paper.id)} className="p-2 bg-slate-100 text-slate-400 hover:bg-red-100 hover:text-red-600 rounded-lg transition"><Trash2 size={16} /></button>
+                </div>
+              ))}
             </div>
           </section>
         </div>
@@ -373,26 +349,20 @@ export default function AdminDashboard() {
             <LayoutDashboard className="mb-4 opacity-50 text-indigo-400" size={32} />
             <h3 className="text-lg font-bold mb-6">System Status</h3>
             <div className="space-y-6">
-                
                 <div className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-3">
                     <span className="block text-[10px] uppercase font-black tracking-widest text-slate-400 border-b border-white/10 pb-2 mb-2">Registered Users</span>
                     <div className="flex justify-between items-center text-sm"><span className="text-slate-300 font-medium">Students</span><span className="font-black text-indigo-400">{userRoles.filter(u => u.role === 'student').length}</span></div>
                     <div className="flex justify-between items-center text-sm"><span className="text-slate-300 font-medium">Teachers</span><span className="font-black text-teal-400">{userRoles.filter(u => u.role === 'teacher').length}</span></div>
                     <div className="flex justify-between items-center text-sm"><span className="text-slate-300 font-medium">Admins</span><span className="font-black text-rose-400">{userRoles.filter(u => u.role === 'admin').length}</span></div>
                 </div>
-
+                {/* 🎯 Z-Score Records Count Sidebar */}
                 <div className="bg-white/5 p-4 rounded-2xl border border-white/10">
-                    <span className="block text-[10px] uppercase font-black tracking-widest text-slate-400 mb-2">Active Enrollments</span>
-                    <span className="text-3xl font-black text-blue-400">{enrollments.length}</span>
+                    <span className="block text-[10px] uppercase font-black tracking-widest text-slate-400 mb-2">Z-Score Records</span>
+                    <span className="text-3xl font-black text-purple-400">{totalZRecords.toLocaleString()}</span>
                 </div>
-                <div className="bg-white/5 p-4 rounded-2xl border border-white/10">
-                    <span className="block text-[10px] uppercase font-black tracking-widest text-slate-400 mb-2">Courses</span>
-                    <span className="text-3xl font-black text-indigo-400">{courses.length}</span>
-                </div>
-                <div className="bg-white/5 p-4 rounded-2xl border border-white/10">
-                    <span className="block text-[10px] uppercase font-black tracking-widest text-slate-400 mb-2">Total Papers</span>
-                    <span className="text-3xl font-black text-amber-400">{papers.length}</span>
-                </div>
+                <div className="bg-white/5 p-4 rounded-2xl border border-white/10"><span className="block text-[10px] uppercase font-black tracking-widest text-slate-400 mb-2">Active Enrollments</span><span className="text-3xl font-black text-blue-400">{enrollments.length}</span></div>
+                <div className="bg-white/5 p-4 rounded-2xl border border-white/10"><span className="block text-[10px] uppercase font-black tracking-widest text-slate-400 mb-2">Courses</span><span className="text-3xl font-black text-indigo-400">{courses.length}</span></div>
+                <div className="bg-white/5 p-4 rounded-2xl border border-white/10"><span className="block text-[10px] uppercase font-black tracking-widest text-slate-400 mb-2">Total Papers</span><span className="text-3xl font-black text-amber-400">{papers.length}</span></div>
             </div>
           </div>
         </aside>
