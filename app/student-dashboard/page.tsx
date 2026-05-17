@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -12,7 +12,8 @@ import {
   Loader2,
   LogOut,
   X,
-  FileUp
+  FileUp,
+  Lock
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -22,6 +23,7 @@ type Paper = {
   id: number;
   title: string;
   subject: string;
+  course_id: number;
 };
 
 type Submission = {
@@ -60,12 +62,7 @@ export default function StudentDashboard() {
         return;
       }
 
-      // 🔐 Role Check: Student ද කියලා බලනවා
-      const { data: roleData } = await supabase
-        .from('user_roles')
-        .select('role')
-        .eq('user_id', session.user.id)
-        .single();
+      const { data: roleData } = await supabase.from('user_roles').select('role').eq('user_id', session.user.id).single();
 
       if (!roleData || roleData.role !== 'student') {
         alert("🛑 Access Denied! Students Only.");
@@ -74,19 +71,39 @@ export default function StudentDashboard() {
       }
 
       setUserId(session.user.id);
-      setUserEmail(session.user.email || "unknown@student.com");
+      setUserEmail(session.user.email || "");
       setIsCheckingAccess(false);
       
       await fetchSubmissions(session.user.id);
-      await fetchPapers();
+      await fetchPapers(session.user.email || "");
     };
 
     void checkAccess();
     return () => { cancelled = true; };
   }, [router]);
 
-  const fetchPapers = async () => {
-    const { data } = await supabase.from('papers').select('*').order('id', { ascending: false });
+  // 🎯 බලය තියෙන පේපර්ස් විතරක් ගන්න ලොජික් එක
+  const fetchPapers = async (email: string) => {
+    // 1. ළමයා ඇතුල් වෙලා ඉන්න කෝස් ටික හොයනවා
+    const { data: enrollments } = await supabase
+      .from('enrollments')
+      .select('course_id')
+      .eq('student_email', email);
+
+    if (!enrollments || enrollments.length === 0) {
+      setAvailablePapers([]); // කිසිම කෝස් එකක් නැත්නම් පේපර්ස් නෑ
+      return;
+    }
+
+    const courseIds = enrollments.map(e => e.course_id);
+
+    // 2. අර හොයාගත්ත කෝස් වලට අයිති පේපර්ස් ටික විතරක් අදිනවා
+    const { data } = await supabase
+      .from('papers')
+      .select('*')
+      .in('course_id', courseIds) // SQL IN operator
+      .order('id', { ascending: false });
+
     if (data) setAvailablePapers(data);
   };
 
@@ -115,46 +132,27 @@ export default function StudentDashboard() {
 
     setIsUploading(true);
     try {
-      const { error: studentError } = await supabase
-        .from('students')
-        .upsert({ id: userId, email: userEmail });
-
+      const { error: studentError } = await supabase.from('students').upsert({ id: userId, email: userEmail });
       if (studentError) throw new Error("STUDENT_TABLE_ERROR: " + studentError.message);
 
       const submissionId = crypto.randomUUID();
       const fileExt = selectedFile.name.split('.').pop();
       const filePath = `${submissionId}/answer_script.${fileExt}`;
 
-      const { error: uploadError } = await supabase.storage
-        .from(STUDENT_ANSWERS_BUCKET)
-        .upload(filePath, selectedFile);
-
+      const { error: uploadError } = await supabase.storage.from(STUDENT_ANSWERS_BUCKET).upload(filePath, selectedFile);
       if (uploadError) throw new Error("STORAGE_ERROR: " + uploadError.message);
 
-      const { error: dbError } = await supabase
-        .from('submissions')
-        .insert({
-          id: submissionId,
-          student_id: userId,
-          paper_id: parseInt(selectedPaperId), 
-          status: 'Pending',
-          total_mark: null
-        });
-
+      const { error: dbError } = await supabase.from('submissions').insert({
+          id: submissionId, student_id: userId, paper_id: parseInt(selectedPaperId), status: 'Pending', total_mark: null
+      });
       if (dbError) throw new Error("SUBMISSIONS_TABLE_ERROR: " + dbError.message);
 
       alert("✅ Answer script submitted successfully!");
-      setIsModalOpen(false);
-      setSelectedFile(null);
-      setSelectedPaperId("");
+      setIsModalOpen(false); setSelectedFile(null); setSelectedPaperId("");
       await fetchSubmissions(userId); 
 
-    } catch (err: any) {
-      console.error("Upload error:", err);
-      alert("❌ " + err.message);
-    } finally {
-      setIsUploading(false);
-    }
+    } catch (err: any) { alert("❌ " + err.message); } 
+    finally { setIsUploading(false); }
   };
 
   const handleLogout = async () => {
@@ -162,13 +160,7 @@ export default function StudentDashboard() {
     router.push('/');
   };
 
-  if (isCheckingAccess) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950">
-        <Loader2 className="animate-spin text-indigo-600" size={40} />
-      </div>
-    );
-  }
+  if (isCheckingAccess) return <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950"><Loader2 className="animate-spin text-indigo-600" size={40} /></div>;
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 animate-in fade-in duration-500">
@@ -186,7 +178,7 @@ export default function StudentDashboard() {
         <aside className="h-fit">
           <div className="bg-gradient-to-br from-indigo-600 to-violet-700 rounded-3xl p-8 shadow-xl shadow-indigo-600/20 text-white text-center">
             <h2 className="font-bold text-2xl mb-2">New Exam?</h2>
-            <p className="text-indigo-100 text-sm mb-8">Select an exam paper and upload your answer script.</p>
+            <p className="text-indigo-100 text-sm mb-8">Select an enrolled exam paper and upload your answer script.</p>
             
             <button 
               onClick={() => setIsModalOpen(true)}
@@ -215,35 +207,17 @@ export default function StudentDashboard() {
             <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
               {submissions.map((sub) => (
                 <div key={sub.id} className="p-5 border rounded-2xl bg-slate-50 dark:bg-slate-800/40 border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition hover:shadow-md">
-                  
                   <div>
-                    <h3 className="font-bold text-slate-700 dark:text-slate-200">
-                      {sub.papers?.title || `Exam Paper`}
-                    </h3>
-                    <p className="text-xs text-slate-400 mt-1 flex items-center gap-1">
-                      <FileText size={12}/> ID: #{sub.id.substring(0,6).toUpperCase()} • {new Date(sub.created_at).toLocaleDateString()}
-                    </p>
+                    <h3 className="font-bold text-slate-700 dark:text-slate-200">{sub.papers?.title || `Exam Paper`}</h3>
+                    <p className="text-xs text-slate-400 mt-1 flex items-center gap-1"><FileText size={12}/> ID: #{sub.id.substring(0,6).toUpperCase()} • {new Date(sub.created_at).toLocaleDateString()}</p>
                   </div>
-
                   <div className="flex items-center gap-4 shrink-0">
                     {sub.status === 'Pending' ? (
-                      <span className="px-3 py-1 bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 text-xs font-bold rounded-full flex items-center gap-1">
-                        <Clock size={12} /> Pending
-                      </span>
+                      <span className="px-3 py-1 bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 text-xs font-bold rounded-full flex items-center gap-1"><Clock size={12} /> Pending</span>
                     ) : (
-                      <span className="px-3 py-1 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 text-xs font-bold rounded-full flex items-center gap-1">
-                        <CheckCircle2 size={12} /> Marked ({sub.total_mark}/100)
-                      </span>
+                      <span className="px-3 py-1 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 text-xs font-bold rounded-full flex items-center gap-1"><CheckCircle2 size={12} /> Marked ({sub.total_mark}/100)</span>
                     )}
-
-                    {sub.status === 'Marked' && (
-                      <Link 
-                        href={`/student-view?id=${sub.id}`} 
-                        className="px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded-xl hover:bg-indigo-700 transition shadow-md"
-                      >
-                        View Results
-                      </Link>
-                    )}
+                    {sub.status === 'Marked' && <Link href={`/student-view?id=${sub.id}`} className="px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded-xl hover:bg-indigo-700 transition shadow-md">View Results</Link>}
                   </div>
                 </div>
               ))}
@@ -259,54 +233,55 @@ export default function StudentDashboard() {
               <h3 className="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                 <FileUp className="text-indigo-600" size={18} /> Upload Submission
               </h3>
-              <button onClick={() => !isUploading && setIsModalOpen(false)} className="text-slate-400 hover:text-red-500 transition p-1">
-                <X size={20} />
-              </button>
+              <button onClick={() => !isUploading && setIsModalOpen(false)} className="text-slate-400 hover:text-red-500 transition p-1"><X size={20} /></button>
             </div>
             
             <div className="p-6 space-y-6">
+              
+              {/* 🎯 Paper Selection Dropdown */}
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">1. Select Exam Paper</label>
-                <select 
-                  value={selectedPaperId} 
-                  onChange={(e) => setSelectedPaperId(e.target.value)}
-                  disabled={isUploading}
-                  className="w-full p-3 border-2 border-slate-200 dark:border-slate-700 focus:border-indigo-500 rounded-xl bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-200 outline-none transition"
-                >
-                  <option value="" disabled>-- Choose a paper --</option>
-                  {availablePapers.map(paper => (
-                    <option key={paper.id} value={paper.id}>{paper.title} ({paper.subject})</option>
-                  ))}
-                </select>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">1. Select Enrolled Paper</label>
+                {availablePapers.length === 0 ? (
+                  <div className="p-4 bg-rose-50 text-rose-600 border border-rose-200 rounded-xl text-sm font-medium flex items-start gap-3">
+                    <Lock size={18} className="mt-0.5" />
+                    <p>You are not enrolled in any active courses yet. Please contact the Admin.</p>
+                  </div>
+                ) : (
+                  <select 
+                    value={selectedPaperId} 
+                    onChange={(e) => setSelectedPaperId(e.target.value)}
+                    disabled={isUploading}
+                    className="w-full p-3 border-2 border-slate-200 dark:border-slate-700 focus:border-indigo-500 rounded-xl bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-200 outline-none transition"
+                  >
+                    <option value="" disabled>-- Choose a paper --</option>
+                    {availablePapers.map(paper => (
+                      <option key={paper.id} value={paper.id}>{paper.title} ({paper.subject})</option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">2. Attach Answer Script</label>
                 <input 
-                  type="file" 
-                  accept="image/*,.pdf" 
+                  type="file" accept="image/*,.pdf" 
                   onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-                  disabled={isUploading}
-                  className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition"
+                  disabled={isUploading || availablePapers.length === 0}
+                  className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition disabled:opacity-50"
                 />
               </div>
 
               <button 
                 onClick={handleFinalSubmit}
-                disabled={isUploading || !selectedPaperId || !selectedFile}
+                disabled={isUploading || !selectedPaperId || !selectedFile || availablePapers.length === 0}
                 className="w-full py-3 bg-indigo-600 text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-indigo-600/30"
               >
-                {isUploading ? (
-                  <><Loader2 size={18} className="animate-spin" /> Submitting...</>
-                ) : (
-                  <><UploadCloud size={18} /> Confirm Upload</>
-                )}
+                {isUploading ? <><Loader2 size={18} className="animate-spin" /> Submitting...</> : <><UploadCloud size={18} /> Confirm Upload</>}
               </button>
             </div>
           </div>
         </div>
       )}
-
     </div>
   );
 }

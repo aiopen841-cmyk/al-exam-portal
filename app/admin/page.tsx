@@ -11,7 +11,8 @@ import {
   LayoutDashboard,
   UserPlus,
   GraduationCap,
-  Search
+  Search,
+  Link as LinkIcon
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -26,7 +27,7 @@ type Paper = {
   title: string;
   subject: string;
   month_year: string;
-  course_id: number; // 🎯 අලුතින් එකතු කරපු කෑල්ල
+  course_id: number; 
 };
 
 type UserRole = {
@@ -35,31 +36,42 @@ type UserRole = {
   role: string;
 };
 
+type Enrollment = {
+  id: number;
+  student_email: string;
+  course_id: number;
+};
+
 export default function AdminDashboard() {
   const router = useRouter();
   const [courses, setCourses] = useState<Course[]>([]);
   const [papers, setPapers] = useState<Paper[]>([]);
   const [userRoles, setUserRoles] = useState<UserRole[]>([]);
+  const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
+  
   const [isLoading, setIsLoading] = useState(true);
   const [isCheckingAccess, setIsCheckingAccess] = useState(true);
   
-  // Course States
+  // States
   const [courseName, setCourseName] = useState("");
   const [courseDesc, setCourseDesc] = useState("");
   const [isAddingCourse, setIsAddingCourse] = useState(false);
 
-  // Paper States
   const [title, setTitle] = useState("");
   const [subject, setSubject] = useState("");
   const [monthYear, setMonthYear] = useState("");
-  const [selectedCourseId, setSelectedCourseId] = useState(""); // 🎯 පේපර් එකට අදාළ කෝස් එක තෝරන්න
+  const [selectedCourseId, setSelectedCourseId] = useState(""); 
   const [isAddingPaper, setIsAddingPaper] = useState(false);
 
-  // User States
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserRole, setNewUserRole] = useState("student");
   const [isAddingUser, setIsAddingUser] = useState(false);
   const [searchUser, setSearchUser] = useState("");
+
+  // 🎯 Enrollment States
+  const [enrollEmail, setEnrollEmail] = useState("");
+  const [enrollCourseId, setEnrollCourseId] = useState("");
+  const [isEnrolling, setIsEnrolling] = useState(false);
 
   useEffect(() => {
     const checkAccess = async () => {
@@ -89,6 +101,9 @@ export default function AdminDashboard() {
     const { data: rData } = await supabase.from('user_roles').select('*').order('created_at', { ascending: false });
     if (rData) setUserRoles(rData);
 
+    const { data: eData } = await supabase.from('enrollments').select('*').order('created_at', { ascending: false });
+    if (eData) setEnrollments(eData);
+
     setIsLoading(false);
   };
 
@@ -102,11 +117,8 @@ export default function AdminDashboard() {
       alert("✅ New Course Created!");
       setCourseName(""); setCourseDesc("");
       fetchData();
-    } catch (err: any) {
-      alert("❌ Error: " + err.message);
-    } finally {
-      setIsAddingCourse(false);
-    }
+    } catch (err: any) { alert("❌ Error: " + err.message); } 
+    finally { setIsAddingCourse(false); }
   };
 
   const deleteCourse = async (id: number) => {
@@ -115,30 +127,52 @@ export default function AdminDashboard() {
     fetchData();
   };
 
+  // --- Enrollment Logic 🎯 ---
+  const handleEnroll = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!enrollEmail || !enrollCourseId) return;
+    setIsEnrolling(true);
+    try {
+      // Check if already enrolled
+      const exists = enrollments.find(en => en.student_email === enrollEmail && en.course_id === parseInt(enrollCourseId));
+      if (exists) {
+        alert("⚠️ This student is already enrolled in this course!");
+        setIsEnrolling(false);
+        return;
+      }
+
+      const { error } = await supabase.from('enrollments').insert({ 
+        student_email: enrollEmail, 
+        course_id: parseInt(enrollCourseId) 
+      });
+      if (error) throw error;
+      alert("✅ Student Enrolled Successfully!");
+      setEnrollEmail(""); setEnrollCourseId("");
+      fetchData();
+    } catch (err: any) { alert("❌ Error: " + err.message); } 
+    finally { setIsEnrolling(false); }
+  };
+
+  const deleteEnrollment = async (id: number) => {
+    if (!confirm("Remove student from this course?")) return;
+    await supabase.from('enrollments').delete().eq('id', id);
+    fetchData();
+  };
+
   // --- Paper Logic ---
   const handleAddPaper = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedCourseId) {
-      alert("⚠️ Please select a course for this paper!");
-      return;
-    }
     setIsAddingPaper(true);
     try {
       const { error } = await supabase.from('papers').insert({ 
-        title, 
-        subject, 
-        month_year: monthYear,
-        course_id: parseInt(selectedCourseId) // 🎯 කෝස් එක සේව් කරනවා
+        title, subject, month_year: monthYear, course_id: parseInt(selectedCourseId) 
       });
       if (error) throw error;
       alert("✅ New Paper Added!");
       setTitle(""); setSubject(""); setMonthYear(""); setSelectedCourseId("");
       fetchData();
-    } catch (err: any) {
-      alert("❌ Error: " + err.message);
-    } finally {
-      setIsAddingPaper(false);
-    }
+    } catch (err: any) { alert("❌ Error: " + err.message); } 
+    finally { setIsAddingPaper(false); }
   };
 
   const deletePaper = async (id: number) => {
@@ -157,11 +191,8 @@ export default function AdminDashboard() {
       alert("✅ Access Granted!");
       setNewUserEmail("");
       fetchData();
-    } catch (err: any) {
-      alert("❌ Error: " + err.message);
-    } finally {
-      setIsAddingUser(false);
-    }
+    } catch (err: any) { alert("❌ Error: " + err.message); } 
+    finally { setIsAddingUser(false); }
   };
 
   const deleteUserRole = async (id: number) => {
@@ -174,6 +205,8 @@ export default function AdminDashboard() {
     user.email.toLowerCase().includes(searchUser.toLowerCase()) || 
     user.role.toLowerCase().includes(searchUser.toLowerCase())
   );
+  
+  const studentList = userRoles.filter(u => u.role === 'student');
 
   if (isCheckingAccess) return <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950"><Loader2 className="animate-spin text-indigo-600" size={40} /></div>;
 
@@ -216,7 +249,49 @@ export default function AdminDashboard() {
             </div>
           </section>
 
-          {/* 🎯 User Management (with Search) */}
+          {/* 🎯 Enrollments Management (New) */}
+          <section className="bg-white dark:bg-slate-900 rounded-[32px] p-8 border border-slate-100 shadow-xl border-t-8 border-t-blue-600">
+            <h2 className="text-xl font-black mb-6 flex items-center gap-2 text-blue-600">
+                <LinkIcon /> Enroll Students to Courses
+            </h2>
+            <form onSubmit={handleEnroll} className="grid md:grid-cols-3 gap-4 mb-8 p-6 bg-blue-50/50 rounded-2xl border-2 border-dashed border-blue-200">
+              
+              <select value={enrollEmail} onChange={e => setEnrollEmail(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-blue-500 text-sm font-bold text-slate-700" required>
+                <option value="" disabled>-- Select Student --</option>
+                {studentList.map(s => <option key={s.id} value={s.email}>{s.email}</option>)}
+              </select>
+
+              <select value={enrollCourseId} onChange={e => setEnrollCourseId(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-blue-500 text-sm font-bold text-slate-700" required>
+                <option value="" disabled>-- Select Course --</option>
+                {courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+
+              <button type="submit" disabled={isEnrolling || courses.length === 0 || studentList.length === 0} className="py-3 bg-blue-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-blue-700 transition disabled:opacity-50">
+                {isEnrolling ? <Loader2 className="animate-spin"/> : <Plus size={20}/>} Enroll Student
+              </button>
+            </form>
+
+            <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
+              {enrollments.length === 0 ? (
+                <div className="text-center py-8 text-slate-400 text-sm">No enrollments yet.</div>
+              ) : (
+                enrollments.map(en => {
+                  const courseName = courses.find(c => c.id === en.course_id)?.name || "Unknown Course";
+                  return (
+                    <div key={en.id} className="flex items-center justify-between p-3 border rounded-xl text-sm hover:bg-slate-50 transition">
+                      <div>
+                        <h4 className="font-bold text-slate-700">{en.student_email}</h4>
+                        <p className="text-[10px] text-blue-600 font-bold mt-1 uppercase tracking-widest">{courseName}</p>
+                      </div>
+                      <button onClick={() => deleteEnrollment(en.id)} className="p-2 bg-slate-100 text-slate-400 hover:bg-red-100 hover:text-red-600 rounded-lg transition"><Trash2 size={16} /></button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
+
+          {/* 🎯 User Management */}
           <section className="bg-white dark:bg-slate-900 rounded-[32px] p-8 border border-slate-100 shadow-xl border-t-8 border-t-emerald-600">
             <h2 className="text-xl font-black mb-6 flex items-center gap-2 text-emerald-600">
                 <UserPlus /> Manage Users & Access
@@ -234,15 +309,8 @@ export default function AdminDashboard() {
             </form>
 
             <div className="mb-6 relative">
-              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                <Search size={18} className="text-slate-400" />
-              </div>
-              <input 
-                type="text" 
-                placeholder="Search by email or role..." 
-                value={searchUser} onChange={(e) => setSearchUser(e.target.value)}
-                className="w-full pl-12 pr-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl outline-none focus:border-emerald-500 transition text-sm text-slate-700"
-              />
+              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none"><Search size={18} className="text-slate-400" /></div>
+              <input type="text" placeholder="Search by email or role..." value={searchUser} onChange={(e) => setSearchUser(e.target.value)} className="w-full pl-12 pr-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl outline-none focus:border-emerald-500 transition text-sm text-slate-700" />
             </div>
 
             <div className="space-y-2 max-h-[350px] overflow-y-auto pr-2">
@@ -255,16 +323,14 @@ export default function AdminDashboard() {
                       <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${user.role === 'admin' ? 'bg-rose-100 text-rose-700' : user.role === 'teacher' ? 'bg-teal-100 text-teal-700' : 'bg-indigo-100 text-indigo-700'}`}>{user.role}</span>
                       <span className="font-medium text-slate-700">{user.email}</span>
                     </div>
-                    {user.role !== 'admin' && (
-                      <button onClick={() => deleteUserRole(user.id)} className="p-2 bg-slate-100 text-slate-400 hover:bg-red-100 hover:text-red-600 rounded-lg transition"><Trash2 size={16} /></button>
-                    )}
+                    {user.role !== 'admin' && <button onClick={() => deleteUserRole(user.id)} className="p-2 bg-slate-100 text-slate-400 hover:bg-red-100 hover:text-red-600 rounded-lg transition"><Trash2 size={16} /></button>}
                   </div>
                 ))
               )}
             </div>
           </section>
 
-          {/* 🎯 Paper Management (Now with Course Linking!) */}
+          {/* 🎯 Paper Management */}
           <section className="bg-white dark:bg-slate-900 rounded-[32px] p-8 border border-slate-100 shadow-xl border-t-8 border-t-amber-600">
             <h2 className="text-xl font-black mb-6 flex items-center gap-2 text-amber-600">
                 <BookOpen /> Manage Exam Papers
@@ -274,17 +340,9 @@ export default function AdminDashboard() {
               <input placeholder="Subject (e.g. Combined Maths)" value={subject} onChange={e => setSubject(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-amber-500 text-sm" required />
               <input placeholder="Month/Year (e.g. Aug 2026)" value={monthYear} onChange={e => setMonthYear(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-amber-500 text-sm" required />
               
-              {/* 🎯 Course Dropdown */}
-              <select 
-                value={selectedCourseId} 
-                onChange={e => setSelectedCourseId(e.target.value)} 
-                className="p-3 rounded-xl border-2 outline-none focus:border-amber-500 text-sm font-bold text-slate-700"
-                required
-              >
+              <select value={selectedCourseId} onChange={e => setSelectedCourseId(e.target.value)} className="p-3 rounded-xl border-2 outline-none focus:border-amber-500 text-sm font-bold text-slate-700" required>
                 <option value="" disabled>-- Select Assigned Course --</option>
-                {courses.map(c => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
+                {courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
 
               <button type="submit" disabled={isAddingPaper || courses.length === 0} className="md:col-span-2 py-3 bg-amber-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-amber-700 transition disabled:opacity-50">
@@ -294,16 +352,11 @@ export default function AdminDashboard() {
 
             <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
               {papers.map(paper => {
-                // 🎯 අදාළ කෝස් එකේ නම හොයාගන්නවා
                 const courseName = courses.find(c => c.id === paper.course_id)?.name || "Unassigned";
-                
                 return (
                   <div key={paper.id} className="flex items-center justify-between p-3 border rounded-xl text-sm hover:bg-slate-50 transition">
                     <div>
-                      <h4 className="font-bold text-slate-700 flex items-center gap-2">
-                        {paper.title} 
-                        <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">{courseName}</span>
-                      </h4>
+                      <h4 className="font-bold text-slate-700 flex items-center gap-2">{paper.title} <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">{courseName}</span></h4>
                       <p className="text-[10px] text-slate-400 mt-1">{paper.subject} • {paper.month_year}</p>
                     </div>
                     <button onClick={() => deletePaper(paper.id)} className="p-2 bg-slate-100 text-slate-400 hover:bg-red-100 hover:text-red-600 rounded-lg transition"><Trash2 size={16} /></button>
@@ -323,20 +376,15 @@ export default function AdminDashboard() {
                 
                 <div className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-3">
                     <span className="block text-[10px] uppercase font-black tracking-widest text-slate-400 border-b border-white/10 pb-2 mb-2">Registered Users</span>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-slate-300 font-medium">Students</span>
-                      <span className="font-black text-indigo-400">{userRoles.filter(u => u.role === 'student').length}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-slate-300 font-medium">Teachers</span>
-                      <span className="font-black text-teal-400">{userRoles.filter(u => u.role === 'teacher').length}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-slate-300 font-medium">Admins</span>
-                      <span className="font-black text-rose-400">{userRoles.filter(u => u.role === 'admin').length}</span>
-                    </div>
+                    <div className="flex justify-between items-center text-sm"><span className="text-slate-300 font-medium">Students</span><span className="font-black text-indigo-400">{userRoles.filter(u => u.role === 'student').length}</span></div>
+                    <div className="flex justify-between items-center text-sm"><span className="text-slate-300 font-medium">Teachers</span><span className="font-black text-teal-400">{userRoles.filter(u => u.role === 'teacher').length}</span></div>
+                    <div className="flex justify-between items-center text-sm"><span className="text-slate-300 font-medium">Admins</span><span className="font-black text-rose-400">{userRoles.filter(u => u.role === 'admin').length}</span></div>
                 </div>
 
+                <div className="bg-white/5 p-4 rounded-2xl border border-white/10">
+                    <span className="block text-[10px] uppercase font-black tracking-widest text-slate-400 mb-2">Active Enrollments</span>
+                    <span className="text-3xl font-black text-blue-400">{enrollments.length}</span>
+                </div>
                 <div className="bg-white/5 p-4 rounded-2xl border border-white/10">
                     <span className="block text-[10px] uppercase font-black tracking-widest text-slate-400 mb-2">Courses</span>
                     <span className="text-3xl font-black text-indigo-400">{courses.length}</span>
